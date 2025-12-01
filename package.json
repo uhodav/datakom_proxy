@@ -1,0 +1,14 @@
+{
+  "name": "rainbow-scada-server",
+  "version": "1.0.0",
+  "description": "Rainbow SCADA persistent Node.js service with reconnect and state tracking.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.0.0"
+  },
+  "author": "",
+  "license": "MIT"
+}
