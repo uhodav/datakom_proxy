@@ -7,7 +7,9 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "ws": "^8.0.0"
+    "axios": "^1.13.2",
+    "socks-proxy-agent": "^8.0.5",
+    "ws": "^8.18.3"
   },
   "author": "",
   "license": "MIT"

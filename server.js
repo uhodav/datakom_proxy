@@ -29,6 +29,33 @@ console.log(`\n=== Rainbow SCADA Persistent Server v${version} ===`);
 // solution_5_server/server.js
 
 const WebSocket = require('ws');
+const SocksProxyAgent = require('socks-proxy-agent');
+const axios = require('axios');
+
+// Источник бесплатных прокси (можно заменить на другой)
+const proxySource = 'https://www.proxy-list.download/api/v1/get?type=socks5';
+let proxies = [];
+let currentProxyIndex = 0;
+
+async function loadProxies() {
+  try {
+    console.log('Загружаем список прокси...');
+    const response = await axios.get(proxySource);
+    proxies = response.data.trim().split('\n').filter(Boolean);
+    console.log(`Загружено прокси: ${proxies.length}`);
+  } catch (err) {
+    console.error('Ошибка загрузки списка прокси:', err.message);
+  }
+}
+
+function getNextProxy() {
+  if (proxies.length === 0) {
+    throw new Error('Список прокси пуст. Загрузите прокси!');
+  }
+  const proxy = proxies[currentProxyIndex];
+  currentProxyIndex = (currentProxyIndex + 1) % proxies.length;
+  return `socks5://${proxy}`;
+}
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 const STATE_PATH = path.join(__dirname, 'state.json');
@@ -245,6 +272,8 @@ class RainbowClient {
         this.nodeList = null;
         this.deviceList = null;
         this.state = CONNECT_ENUM.NO_CONNECTION;
+        this.currentProxyUrl = null;
+        this.lastErrorCode = null;
     }
     setState(state) {
       this.state = state;
@@ -252,26 +281,49 @@ class RainbowClient {
       console.log('[STATE]', state);
     }
     connect() {
-      // Не создавать новое соединение, если уже открыто
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         return Promise.resolve();
       }
       this.setState(CONNECT_ENUM.CONNECTING);
       return new Promise((resolve, reject) => {
-        this.ws = new WebSocket(this.config.ws_url, { rejectUnauthorized: false });
+        let proxyUrl;
+        try {
+          proxyUrl = getNextProxy();
+        } catch (e) {
+          reject(e);
+          return;
+        }
+        this.currentProxyUrl = proxyUrl;
+        console.log(`[PROXY] Подключаемся через: ${proxyUrl}`);
+        const agent = new SocksProxyAgent(proxyUrl);
+        this.ws = new WebSocket(this.config.ws_url, { rejectUnauthorized: false, agent });
         this.ws.on('open', () => {
           this.setState(CONNECT_ENUM.WAITING_CHALLENGE);
           resolve();
         });
         this.ws.on('error', (err) => {
           this.setState(CONNECT_ENUM.ERROR);
-          reject(err);
+          console.error(`[WS][ERROR] (${proxyUrl}):`, err.message);
+          // Переключаемся на следующий прокси
+          setTimeout(() => {
+            this.connect().then(resolve).catch(reject);
+          }, 1000);
         });
-        this.ws.on('close', () => {
-          // При закрытии сбрасываем глобальный isLoggedIn
+        this.ws.on('close', (code, reason) => {
           isLoggedIn = false;
           this.setState(CONNECT_ENUM.RECONNECTING);
-          this.login();
+          console.log(`[WS][CLOSE] (${proxyUrl}): code=${code}, reason=${reason}`);
+          // Если ошибка 1003 — меняем прокси
+          if (code === 1003 || this.lastErrorCode === 1003) {
+            console.log('[PROXY] Ошибка 1003, переключаем прокси...');
+            setTimeout(() => {
+              this.connect().then(resolve).catch(reject);
+            }, 1000);
+          } else {
+            setTimeout(() => {
+              this.connect().then(resolve).catch(reject);
+            }, 2000);
+          }
         });
         this.ws.on('message', (data) => {
           let msg = null;
@@ -279,7 +331,6 @@ class RainbowClient {
             msg = JSON.parse(data.toString());
             this.handleMessage(msg);
           } catch (err) {
-            // Если не JSON — бинарное сообщение
             let buf;
             if (Buffer.isBuffer(data)) buf = data;
             else if (typeof data === 'string') buf = Buffer.from(data, 'binary');
@@ -291,7 +342,6 @@ class RainbowClient {
       });
     }
     handleMessage(msg) {
-      // Логируем все входящие сообщения (и JSON, и бинарные)
       try {
         if (typeof msg === 'object') {
           if (msg.Binary || msg.binary) {
@@ -304,6 +354,12 @@ class RainbowClient {
         }
       } catch (e) {
         console.log('[SCADA][IN][ERR]', msg);
+      }
+      // Сохраняем последний код ошибки, если есть
+      if (msg.Code === 1003 || msg.code === 1003 || msg.ErrCode === 1003) {
+        this.lastErrorCode = 1003;
+      } else {
+        this.lastErrorCode = null;
       }
       // Обработка Multiple Logon Error
       if (msg.Request === 'user_warn' && (msg.ErrText === 'Multiple Logon Error' || msg.ErrCode === -1010)) {
@@ -384,20 +440,20 @@ let isConnecting = false;
 let connectPromise = null;
 
 async function ensureConnectedAndLoggedIn() {
-  // Если уже есть соединение и логин — просто вернуть
   if (persistentClient.ws && persistentClient.ws.readyState === WebSocket.OPEN && isLoggedIn) {
     return;
   }
-  // Если уже идёт процесс подключения/логина — ждем его
   if (isConnecting && connectPromise) {
     await connectPromise;
     return;
   }
-  // Запускаем процесс подключения/логина
   isConnecting = true;
   connectPromise = (async () => {
     try {
-      // Не создавать новое соединение, если уже открыто
+      // Загружаем список прокси, если еще не загружен
+      if (proxies.length === 0) {
+        await loadProxies();
+      }
       await persistentClient.connect();
       if (!isLoggedIn) {
         console.log('[LOGIN] Запуск авторизации...');
@@ -408,7 +464,6 @@ async function ensureConnectedAndLoggedIn() {
     } catch (e) {
       console.log('[LOGIN][ERROR]', e.message);
       isLoggedIn = false;
-      // Если ошибка — закрыть соединение
       if (persistentClient.ws) try { persistentClient.ws.close(); } catch {}
     } finally {
       isConnecting = false;
