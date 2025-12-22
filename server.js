@@ -1,3 +1,11 @@
+const path = require('path');
+const fs = require('fs');
+
+const DATA_DIR = path.join(__dirname, 'data');
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 function getIntFromQueryOrConfig(query, key, configKey) {
   let val = query[key];
@@ -39,8 +47,7 @@ function saveBinaryPacket(data) {
   }
 }
 // Import error codes
-const path = require('path');
-// const errorCodes = require(path.join(__dirname, 'errorCodes.js'));
+// const errorCodes = require(path.join(DATA_DIR, 'errorCodes.js'));
 
 // Function to get error text by code
 function getErrorText(code) {
@@ -51,9 +58,8 @@ function getErrorText(code) {
   return '';
 }
 
-const fs = require('fs');
 
-const VERSION_FILE = path.join(__dirname, 'version.txt');
+const VERSION_FILE = path.join(DATA_DIR, 'version.txt');
 let version = 1;
 
 try {
@@ -70,7 +76,7 @@ try {
 const WebSocket = require('ws');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
-const STATE_PATH = path.join(__dirname, 'state.json');
+const STATE_PATH = path.join(DATA_DIR, 'state.json');
 
 const CONNECT_ENUM = {
 NO_CONNECTION: 'No connection',
@@ -141,9 +147,7 @@ class RainbowClient {
         console.log('node_id', node_id, 'did', did);
         console.log('this.config', this.config)
         const fname = getDumpDevmFileName(node_id, did);
-        fs.writeFileSync(path.join(__dirname, fname), JSON.stringify(msg, null, 2), 'utf-8');
-        // Optionally, also update a symlink or copy to dump_devm.json for backward compatibility
-        //fs.writeFileSync(path.join(__dirname, 'dump_devm.json'), JSON.stringify(msg, null, 2), 'utf-8');
+        fs.writeFileSync(path.join(DATA_DIR, fname), JSON.stringify(msg, null, 2), 'utf-8');
       } catch (e) {
         console.log('[DUMP_DEVM][ERROR]', e.message);
       }
@@ -151,7 +155,7 @@ class RainbowClient {
 
     setState(state) {
       this.state = state;
-      saveState(state);
+      saveState(this.state);
     }
     connect() {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -225,7 +229,7 @@ class RainbowClient {
         if (msg.Node || (msg.DevxList && msg.DevxList.length > 0 && msg.DevxList[0].Node)) {
           const nodeId = msg.Node || msg.DevxList[0].Node;
           try {
-            fs.writeFileSync(path.join(__dirname, `devx_list_${nodeId}.json`), JSON.stringify(msg, null, 2), 'utf-8');
+            fs.writeFileSync(path.join(DATA_DIR, `devx_list_${nodeId}.json`), JSON.stringify(msg, null, 2), 'utf-8');
           } catch (e) {
             console.log('[SCADA][ERROR] Could not save devx_list:', e.message);
           }
@@ -272,24 +276,29 @@ class RainbowClient {
       const loginResponse = await this.waitForMessage('usr_login', 20000);
       if (!loginResponse.UsrIdt) throw new Error('Login failed');
       this.setState(CONNECT_ENUM.CONNECTED);
+      this.send({ Request: 'node_list' });
       const nodeList = await this.waitForMessage('node_list', 15000);
       try {
-        fs.writeFileSync(path.join(__dirname, 'node_list.json'), JSON.stringify(nodeList, null, 2), 'utf-8');
+        fs.writeFileSync(path.join(DATA_DIR, 'node_list.json'), JSON.stringify(nodeList, null, 2), 'utf-8');
+        const CONFIG_PATH = path.join(__dirname, 'config.json');
+        const STATE_PATH = path.join(DATA_DIR, 'state.json');
+        fs.writeFileSync(STATE_PATH, JSON.stringify({ connect_state: this.state }, null, 2), 'utf-8');
+        const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
       } catch (e) {
         console.log('[LOGIN][ERROR] Could not save node_list:', e.message);
       }
-      // --- Auto-send devx_pump after login ---
+      // Auto-send devx_list and devx_pump for the first node
       if (nodeList && nodeList.NodeList && nodeList.NodeList.length > 0) {
         const nodeId = nodeList.NodeList[0].id;
         this.send({ Request: 'devx_list', Node: nodeId, Skip: 0 });
-        setTimeout(() => {
-          if (this.deviceList && this.deviceList.DevxList && this.deviceList.DevxList.length > 0) {
-            const did = this.deviceList.DevxList[0].did;
-            this.send({ Request: 'devx_pump', job: 1, did });
-          } else {
-            console.log('[AUTO] No devices for devx_pump');
-          }
-        }, 1000);
+        // Wait for devx_list for this node
+        const devxList = await this.waitForMessage('devx_list', 10000);
+        if (devxList && devxList.DevxList && devxList.DevxList.length > 0) {
+          const did = devxList.DevxList[0].did;
+          this.send({ Request: 'devx_pump', job: 1, did });
+        } else {
+          console.log('[AUTO] No devices for devx_pump');
+        }
       }
       return { login: loginResponse, nodes: nodeList };
     }
@@ -394,7 +403,7 @@ const server = http.createServer(async (req, res) => {
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       // Find the file for this node_id and did
       const dumpFile = getDumpDevmFileName(node_id, did);
-      const dumpPath = path.join(__dirname, dumpFile);
+      const dumpPath = path.join(DATA_DIR, dumpFile);
       if (!fs.existsSync(dumpPath)) {
         res.writeHead(404);
         res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
@@ -420,7 +429,7 @@ const server = http.createServer(async (req, res) => {
       const node_id = getIntFromQueryOrConfig(parsedUrl.query, 'node_id', 'node_id');
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = `dump_devm_${node_id}_${did}.json`;
-      const dumpPath = path.join(__dirname, dumpFile);
+      const dumpPath = path.join(DATA_DIR, dumpFile);
       if (!fs.existsSync(dumpPath)) {
         res.writeHead(404);
         res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
@@ -443,7 +452,7 @@ const server = http.createServer(async (req, res) => {
       const node_id = getIntFromQueryOrConfig(parsedUrl.query, 'node_id', 'node_id');
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = `dump_devm_${node_id}_${did}.json`;
-      const dumpPath = path.join(__dirname, dumpFile);
+      const dumpPath = path.join(DATA_DIR, dumpFile);
       if (!fs.existsSync(dumpPath)) {
         res.writeHead(404);
         res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
@@ -462,7 +471,7 @@ const server = http.createServer(async (req, res) => {
 
   // Example: /api/node_list — get node_list via persistent WS
   if (pathname === '/api/node_list') {
-    const nodeListPath = path.join(__dirname, 'node_list.json');
+    const nodeListPath = path.join(DATA_DIR, 'node_list.json');
     try {
       if (persistentClient.ws && persistentClient.ws.readyState === WebSocket.OPEN && isLoggedIn) {
         if (fs.existsSync(nodeListPath)) {
@@ -503,7 +512,7 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ success: false, error: 'No node id' }));
       return;
     }
-    const devxListPath = path.join(__dirname, `devx_list_${nodeId}.json`);
+    const devxListPath = path.join(DATA_DIR, `devx_list_${nodeId}.json`);
     try {
       
       if (persistentClient.ws && persistentClient.ws.readyState === WebSocket.OPEN && isLoggedIn) {
@@ -546,7 +555,7 @@ const server = http.createServer(async (req, res) => {
       const node_id = getIntFromQueryOrConfig(parsedUrl.query, 'node_id', 'node_id');
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = `dump_devm_${node_id}_${did}.json`;
-      const dumpPath = path.join(__dirname, dumpFile);
+      const dumpPath = path.join(DATA_DIR, dumpFile);
       let data = null;
       if (fs.existsSync(dumpPath)) {
         data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
