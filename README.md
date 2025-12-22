@@ -21,12 +21,56 @@
 | File/Folder      | Purpose                                      |
 |------------------|-----------------------------------------------|
 | server.js        | Main Node.js server (HTTP + WebSocket)        |
-| config.json      | Connection config (ws_url, login, password)   |
-| state.json       | Current connection state                      |
-| dump_devm.json   | Last device dump                              |
+| data/            | All runtime JSON files (dumps, state, lists)  |
+| data/config.json | Connection config (ws_url, login, password)   |
+| data/state.json  | Current connection state                      |
+| data/node_list.json | Last received node list                    |
+| data/dump_devm_{node_id}_{did}.json | Device dump per node/device |
+| data/devx_list_{node_id}.json | Device list per node             |
+| data/version.txt | Server version counter                        |
 | errorCodes.js    | Rainbow SCADA error codes                     |
 | api_test.html    | Test page for API                             |
 | package.json     | Dependencies and start scripts                |
+## Data Directory
+
+All runtime JSON files (device dumps, lists, config, state, version) are now stored in the `data/` directory. This keeps the project root clean and makes it easier to manage files and .gitignore rules.
+
+**On first run, the server will create the `data/` directory if it does not exist.**
+
+## Multi-Node and Device Support
+
+- The server supports multiple nodes and devices. Device dumps and lists are saved per node and device using the naming pattern:
+	- `data/dump_devm_{node_id}_{did}.json`
+	- `data/devx_list_{node_id}.json`
+- The first node_id is auto-saved to config for convenience, but you can specify `node_id` and `did` in API queries for precise access.
+
+## Improved File Naming and Config Fallback
+
+- All file operations use robust naming and fallback to config values if parameters are missing.
+- If a parameter is not provided in the API request, the value from `data/config.json` is used.
+
+## Error Handling
+
+- The server logs warnings and errors for file operations and connection issues.
+- Connection state is always saved to `data/state.json`.
+
+## Dependencies
+
+- Node.js >= 14
+- ws (WebSocket client/server)
+- axios (optional, for extended features)
+- socks-proxy-agent (optional, for proxy support)
+
+Install all dependencies with `npm install`.
+
+## Versioning
+
+- The server auto-increments a version counter in `data/version.txt` on each start.
+
+## .gitignore
+
+- The `data/` directory and its contents (except for templates) should be added to `.gitignore` to avoid committing runtime data.
+
 
 ## Quick Start
 
@@ -121,10 +165,12 @@ Open `api_test.html` in your browser to test the API via UI.
 - socks-proxy-agent (optional)
 
 ## Notes
-- All connection parameters are in `config.json`.
-- Connection state is in `state.json` (`connect_state` key).
-- Device dumps are saved as `{node_id}_{did}_dump_devm.json`.
+- All connection parameters are in `data/config.json`.
+- Connection state is in `data/state.json` (`connect_state` key).
+- Device dumps are saved as `data/dump_devm_{node_id}_{did}.json`.
+- Device lists are saved as `data/devx_list_{node_id}.json`.
 - Error codes are in `errorCodes.js`.
+- All runtime JSON files are isolated in `data/` for easier management and git hygiene.
 
 ---
 **Author:**
