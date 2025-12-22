@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Datakom Proxy API Test</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2em; }
+    button { margin: 0.5em 0.5em 0.5em 0; padding: 0.5em 1em; }
+    #result { margin-top: 2em; white-space: pre; background: #f8f8f8; border: 1px solid #ccc; padding: 1em; }
+  </style>
+</head>
+<style>
+  h2 { margin-bottom: 0.5em; }
+  .block-btns {
+    display: grid;
+    gap: 0.5em;
+    margin-bottom: 1em;
+  }
+  .block-btns_item {
+    border: 1px solid grey;
+    padding: 5px;
+    border-radius: 5px;
+  }
+</style>
+<body>
+  <h2>Datakom Proxy API Test</h2>
+  <div class="block-btns">
+    <div class="block-btns_item"><button onclick="callApi('health')">Server status</button><div class="btn-hint">Check server health status</div></div>
+    <div class="block-btns_item"><button onclick="callApi('node_list')">Devices</button><div class="btn-hint">Get the list of user nodes</div></div>
+    <div class="block-btns_item">
+      <div>
+        <label>node_id: <input id="listNode_node_id" type="text" placeholder="example, 12345"></label>
+        <button onclick="callApi('devx_list?node=' + buildDidNodeId('listNode'))">Device list</button>
+      </div>
+      <div class="btn-hint">Get device list for node</div>
+    </div>
+    <div class="block-btns_item">
+      <div>
+        <label>node_id: <input id="paramId_node_id" type="text" placeholder="node id (optional)"></label>
+        <label>did: <input id="paramId_did" type="text" placeholder="device id (optional)"></label>
+        <label>param id(s): <input id="paramId" type="text" placeholder="example, 293,274,275"></label>
+        <button onclick="callApi('dump_devm?id=' + encodeURIComponent(document.getElementById('paramId').value) + buildDidNodeId('paramId'))">Device data</button>
+      </div>
+      <div class="btn-hint">Get specific parameters by their param IDs from the last dump. You can specify <b>did</b> and <b>node_id</b> (if omitted, values from config.json are used).</div>
+    </div>
+    <div class="block-btns_item">
+      <div>
+        <label>node_id: <input id="paramNames_node_id" type="text" placeholder="node id (optional)"></label>
+        <label>did: <input id="paramNames_did" type="text" placeholder="device id (optional)"></label>
+        <button onclick="callApi('dump_devm_param_names' + buildDidNodeId('paramNames'))">Parameter names list</button>
+      </div>
+      <div class="btn-hint">Get all parameter names (N) from VALUE. You can specify <b>did</b> and <b>node_id</b> (if omitted, values from config.json are used).</div>
+    </div>
+    <div class="block-btns_item">
+      <div>
+        <label>node_id: <input id="alarm_node_id" type="text" placeholder="node id (optional)"></label>
+        <label>did: <input id="alarm_did" type="text" placeholder="device id (optional)"></label>
+        <button onclick="callApi('dump_devm_alarm' + buildDidNodeId('alarm'))">EXTRA.Alarm</button>
+      </div>
+      <div class="btn-hint">Get EXTRA.Alarm object from the last dump. You can specify <b>did</b> and <b>node_id</b> (if omitted, values from config.json are used).</div>
+    </div>
+    <div class="block-btns_item">
+      <div>
+        <label>node_id: <input id="leds_node_id" type="text" placeholder="node id (optional)"></label>
+        <label>did: <input id="leds_did" type="text" placeholder="device id (optional)"></label>
+        <button onclick="callApi('dump_devm_leds' + buildDidNodeId('leds'))">EXTRA.Leds</button>
+      </div>
+      <div class="btn-hint">Get EXTRA.Leds object from the last dump. You can specify <b>did</b> and <b>node_id</b> (if omitted, values from config.json are used).</div>
+    </div>
+    <div class="block-btns_item"><button onclick="callApiAny()">POST /api/any (devx_pump)</button><div class="btn-hint">Send a universal SCADA request (devx_pump)</div></div>
+  </div>
+  
+  <div id="result" style="white-space: break-spaces; overflow: auto; max-height: 300px;">The answer will appear here...</div>
+  <script>
+    // Helper to build ?did=...&node_id=... for API calls
+    function buildDidNodeId(prefix) {
+      const did = document.getElementById(prefix + '_did')?.value.trim();
+      const node_id = document.getElementById(prefix + '_node_id')?.value.trim();
+      let q = '';
+      if (did) q += (q ? '&' : '?') + 'did=' + encodeURIComponent(did);
+      if (node_id) q += (q ? '&' : '?') + 'node_id=' + encodeURIComponent(node_id);
+      return q;
+    }
+    function getApiBase() {
+      const path = window.location.pathname;
+      const parts = path.split('/');
+      parts.pop();
+      return parts.join('/') + '/api/';
+    }
+    async function callApi(endpoint) {
+      document.getElementById('result').textContent = 'Loading...';
+      try {
+        const apiBase = getApiBase();
+        const res = await fetch(apiBase + endpoint);
+        const text = await res.text();
+        document.getElementById('result').textContent = text;
+      } catch (e) {
+        document.getElementById('result').textContent = 'Error: ' + e;
+      }
+    }
+    async function callApiAny() {
+      document.getElementById('result').textContent = 'Loading...';
+      try {
+        const apiBase = getApiBase();
+        const body = { Request: 'devx_pump', job: 1 };
+        const res = await fetch(apiBase + 'any', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const text = await res.text();
+        document.getElementById('result').textContent = text;
+      } catch (e) {
+        document.getElementById('result').textContent = 'Error: ' + e;
+      }
+    }
+  </script>
+</body>
+</html>
