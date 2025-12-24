@@ -109,19 +109,24 @@ The server runs on port `8765`.
 
 ### Main Endpoints:
 
-| Method | URL                                                        | Description                                 |
-|--------|------------------------------------------------------------|---------------------------------------------|
-| GET    | `/api/health`                                              | Server health check                         |
-| GET    | `/api/node_list`                                           | Get user node list                          |
-| GET    | `/api/devx_list?node=ID`                                   | Get device list for node                    |
-| GET    | `/api/dump_devm?did=DEVICE_ID`                             | Get all parameters for device (by did)      |
-| GET    | `/api/dump_devm?id=293,274,275&did=DEVICE_ID`              | Get parameter values by id for device       |
-| GET    | `/api/dump_devm_param_names?did=DEVICE_ID`                 | Get all id and label from VALUE for device  |
-| GET    | `/api/dump_devm_alarm?did=DEVICE_ID`                       | Get EXTRA.Alarm object for device           |
-| GET    | `/api/dump_devm_leds?did=DEVICE_ID`                        | Get EXTRA.Leds object for device            |
-| POST   | `/api/any`                                                 | Universal proxy request to SCADA            |
+| Method | URL & Query Parameters                                                                 | Description                                 |
+|--------|----------------------------------------------------------------------------------------|---------------------------------------------|
+| GET    | `/api/health`                                                                          | Server health check                         |
+| GET    | `/api/node_list`                                                                       | Get user node list                          |
+| GET    | `/api/devx_list?node_id=NODE_ID`                                                       | Get device list for node                    |
+| GET    | `/api/dump_devm?did=DEVICE_ID&node_id=NODE_ID&id=ID1,ID2,...`                          | Get parameters (all or by id) for device/node|
+| GET    | `/api/dump_devm_param_names?did=DEVICE_ID&node_id=NODE_ID`                             | Get all id and label from VALUE for device/node|
+| GET    | `/api/dump_devm_alarm?did=DEVICE_ID&node_id=NODE_ID`                                   | Get EXTRA.Alarm object for device/node      |
+| GET    | `/api/dump_devm_leds?did=DEVICE_ID&node_id=NODE_ID`                                    | Get EXTRA.Leds object for device/node       |
+| GET    | `/api/restart`                                                                         | Restart WebSocket connection                |
+| POST   | `/api/any` (body: JSON SCADA request)                                                  | Universal proxy request to SCADA            |
 
-> **Note:** The `did` parameter is optional for all dump_devm endpoints. If not provided, the value from `did` in `config.json` is used.
+**Parameters:**
+- `node_id` — Node ID (optional, uses config if not provided)
+- `did` — Device ID (optional, uses config if not provided)
+- `id` — Comma-separated parameter IDs (optional, for /api/dump_devm)
+
+> If `node_id` or `did` are not provided, values from `data/config.json` are used as fallback.
 
 #### File Naming
 
@@ -151,6 +156,7 @@ curl "http://localhost:8765/api/dump_devm?id=293,274,275&did=17693&node_id=12345
 curl "http://localhost:8765/api/dump_devm_param_names?did=17693&node_id=12345"
 curl "http://localhost:8765/api/dump_devm_alarm?did=17693&node_id=12345"
 curl "http://localhost:8765/api/dump_devm_leds?did=17693&node_id=12345"
+curl http://localhost:8765/api/restart
 ```
 
 ### Test Page

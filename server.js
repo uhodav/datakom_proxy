@@ -391,8 +391,18 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
   if (pathname === '/api/health') {
+    let connect_state = null;
+    try {
+      const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
+      const stateObj = JSON.parse(stateData);
+      connect_state = stateObj.connect_state || null;
+    } catch {}
     res.writeHead(200);
-    res.end(JSON.stringify({ status: 'ok', time: new Date().toISOString() }));
+    res.end(JSON.stringify({
+      status: 'ok',
+      time: new Date().toISOString(),
+      connect_state
+    }));
     return;
   }
 
@@ -401,21 +411,48 @@ const server = http.createServer(async (req, res) => {
     try {
       const node_id = getIntFromQueryOrConfig(parsedUrl.query, 'node_id', 'node_id');
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
-      // Find the file for this node_id and did
       const dumpFile = getDumpDevmFileName(node_id, did);
       const dumpPath = path.join(DATA_DIR, dumpFile);
-      if (!fs.existsSync(dumpPath)) {
+      let connect_state = null;
+      try {
+        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
+        const stateObj = JSON.parse(stateData);
+        connect_state = stateObj.connect_state || null;
+      } catch {}
+      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(dumpPath)) {
+        const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
+        let params = [];
+        if (data && data.VALUE && Array.isArray(data.VALUE)) {
+          params = data.VALUE.filter(item => item.A !== undefined && item.N).map(item => ({ id: item.A, label: item.N }));
+        }
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, params }));
+        return;
+      } else if (!fs.existsSync(dumpPath)) {
+        // No file, try to login and fetch from WS
+        await ensureConnectedAndLoggedIn();
+        persistentClient.send({ Request: 'dump_devm', did, node_id });
+        // Wait for dump_devm message
+        const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
+        if (dumpMsg && dumpMsg.MSG) {
+          fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
+          let params = [];
+          if (dumpMsg.MSG.VALUE && Array.isArray(dumpMsg.MSG.VALUE)) {
+            params = dumpMsg.MSG.VALUE.filter(item => item.A !== undefined && item.N).map(item => ({ id: item.A, label: item.N }));
+          }
+          res.writeHead(200);
+          res.end(JSON.stringify({ success: true, params }));
+          return;
+        } else {
+          res.writeHead(404);
+          res.end(JSON.stringify({ success: false, error: 'No dump_devm data available from WS' }));
+          return;
+        }
+      } else {
         res.writeHead(404);
         res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
         return;
       }
-      const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
-      let params = [];
-      if (data && data.VALUE && Array.isArray(data.VALUE)) {
-        params = data.VALUE.filter(item => item.A !== undefined && item.N).map(item => ({ id: item.A, label: item.N }));
-      }
-      res.writeHead(200);
-      res.end(JSON.stringify({ success: true, params }));
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
@@ -430,15 +467,38 @@ const server = http.createServer(async (req, res) => {
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = `dump_devm_${node_id}_${did}.json`;
       const dumpPath = path.join(DATA_DIR, dumpFile);
-      if (!fs.existsSync(dumpPath)) {
+      let connect_state = null;
+      try {
+        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
+        const stateObj = JSON.parse(stateData);
+        connect_state = stateObj.connect_state || null;
+      } catch {}
+      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(dumpPath)) {
+        const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
+        const alarm = data && data.EXTRA && data.EXTRA.Alarm ? data.EXTRA.Alarm : null;
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, alarm }));
+        return;
+      } else if (!fs.existsSync(dumpPath)) {
+        await ensureConnectedAndLoggedIn();
+        persistentClient.send({ Request: 'dump_devm', did, node_id });
+        const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
+        if (dumpMsg && dumpMsg.MSG) {
+          fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
+          const alarm = dumpMsg.MSG.EXTRA && dumpMsg.MSG.EXTRA.Alarm ? dumpMsg.MSG.EXTRA.Alarm : null;
+          res.writeHead(200);
+          res.end(JSON.stringify({ success: true, alarm }));
+          return;
+        } else {
+          res.writeHead(404);
+          res.end(JSON.stringify({ success: false, error: 'No dump_devm data available from WS' }));
+          return;
+        }
+      } else {
         res.writeHead(404);
         res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
         return;
       }
-      const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
-      const alarm = data && data.EXTRA && data.EXTRA.Alarm ? data.EXTRA.Alarm : null;
-      res.writeHead(200);
-      res.end(JSON.stringify({ success: true, alarm }));
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
@@ -453,15 +513,38 @@ const server = http.createServer(async (req, res) => {
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = `dump_devm_${node_id}_${did}.json`;
       const dumpPath = path.join(DATA_DIR, dumpFile);
-      if (!fs.existsSync(dumpPath)) {
+      let connect_state = null;
+      try {
+        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
+        const stateObj = JSON.parse(stateData);
+        connect_state = stateObj.connect_state || null;
+      } catch {}
+      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(dumpPath)) {
+        const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
+        const leds = data && data.EXTRA && data.EXTRA.Leds ? data.EXTRA.Leds : null;
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, leds }));
+        return;
+      } else if (!fs.existsSync(dumpPath)) {
+        await ensureConnectedAndLoggedIn();
+        persistentClient.send({ Request: 'dump_devm', did, node_id });
+        const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
+        if (dumpMsg && dumpMsg.MSG) {
+          fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
+          const leds = dumpMsg.MSG.EXTRA && dumpMsg.MSG.EXTRA.Leds ? dumpMsg.MSG.EXTRA.Leds : null;
+          res.writeHead(200);
+          res.end(JSON.stringify({ success: true, leds }));
+          return;
+        } else {
+          res.writeHead(404);
+          res.end(JSON.stringify({ success: false, error: 'No dump_devm data available from WS' }));
+          return;
+        }
+      } else {
         res.writeHead(404);
         res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
         return;
       }
-      const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
-      const leds = data && data.EXTRA && data.EXTRA.Leds ? data.EXTRA.Leds : null;
-      res.writeHead(200);
-      res.end(JSON.stringify({ success: true, leds }));
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
@@ -472,29 +555,29 @@ const server = http.createServer(async (req, res) => {
   // Example: /api/node_list — get node_list via persistent WS
   if (pathname === '/api/node_list') {
     const nodeListPath = path.join(DATA_DIR, 'node_list.json');
+    let connect_state = null;
     try {
-      if (persistentClient.ws && persistentClient.ws.readyState === WebSocket.OPEN && isLoggedIn) {
-        if (fs.existsSync(nodeListPath)) {
-          const nodeList = JSON.parse(fs.readFileSync(nodeListPath, 'utf-8'));
-          res.writeHead(200);
-          res.end(JSON.stringify({ success: true, data: nodeList }));
-          return;
-        } else {
-          persistentClient.send({ Request: 'node_list' });
-          const nodeList = await persistentClient.waitForMessage('node_list', 10000);
-          fs.writeFileSync(nodeListPath, JSON.stringify(nodeList, null, 2), 'utf-8');
-          res.writeHead(200);
-          res.end(JSON.stringify({ success: true, data: nodeList }));
-          return;
-        }
-      } else {
-        
+      try {
+        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
+        const stateObj = JSON.parse(stateData);
+        connect_state = stateObj.connect_state || null;
+      } catch {}
+      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(nodeListPath)) {
+        const nodeList = JSON.parse(fs.readFileSync(nodeListPath, 'utf-8'));
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, data: nodeList }));
+        return;
+      } else if (!fs.existsSync(nodeListPath)) {
         await ensureConnectedAndLoggedIn();
         persistentClient.send({ Request: 'node_list' });
         const nodeList = await persistentClient.waitForMessage('node_list', 10000);
         fs.writeFileSync(nodeListPath, JSON.stringify(nodeList, null, 2), 'utf-8');
         res.writeHead(200);
         res.end(JSON.stringify({ success: true, data: nodeList }));
+        return;
+      } else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ success: false, error: 'No node_list data available' }));
         return;
       }
     } catch (e) {
@@ -513,32 +596,29 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const devxListPath = path.join(DATA_DIR, `devx_list_${nodeId}.json`);
+    let connect_state = null;
     try {
-      
-      if (persistentClient.ws && persistentClient.ws.readyState === WebSocket.OPEN && isLoggedIn) {
-        
-        if (fs.existsSync(devxListPath)) {
-          const devxList = JSON.parse(fs.readFileSync(devxListPath, 'utf-8'));
-          res.writeHead(200);
-          res.end(JSON.stringify({ success: true, data: devxList }));
-          return;
-        } else {
-          
-          persistentClient.send({ Request: 'devx_list', Node: nodeId, Skip: 0 });
-          const devxList = await persistentClient.waitForMessage('devx_list', 10000);
-          fs.writeFileSync(devxListPath, JSON.stringify(devxList, null, 2), 'utf-8');
-          res.writeHead(200);
-          res.end(JSON.stringify({ success: true, data: devxList }));
-          return;
-        }
-      } else {
-        
+      try {
+        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
+        const stateObj = JSON.parse(stateData);
+        connect_state = stateObj.connect_state || null;
+      } catch {}
+      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(devxListPath)) {
+        const devxList = JSON.parse(fs.readFileSync(devxListPath, 'utf-8'));
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, data: devxList }));
+        return;
+      } else if (!fs.existsSync(devxListPath)) {
         await ensureConnectedAndLoggedIn();
         persistentClient.send({ Request: 'devx_list', Node: nodeId, Skip: 0 });
         const devxList = await persistentClient.waitForMessage('devx_list', 10000);
         fs.writeFileSync(devxListPath, JSON.stringify(devxList, null, 2), 'utf-8');
         res.writeHead(200);
         res.end(JSON.stringify({ success: true, data: devxList }));
+        return;
+      } else {
+        res.writeHead(404);
+        res.end(JSON.stringify({ success: false, error: 'No devx_list data available' }));
         return;
       }
     } catch (e) {
@@ -556,9 +636,23 @@ const server = http.createServer(async (req, res) => {
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = `dump_devm_${node_id}_${did}.json`;
       const dumpPath = path.join(DATA_DIR, dumpFile);
+      let connect_state = null;
+      try {
+        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
+        const stateObj = JSON.parse(stateData);
+        connect_state = stateObj.connect_state || null;
+      } catch {}
       let data = null;
-      if (fs.existsSync(dumpPath)) {
+      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(dumpPath)) {
         data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
+      } else if (!fs.existsSync(dumpPath)) {
+        await ensureConnectedAndLoggedIn();
+        persistentClient.send({ Request: 'dump_devm', did, node_id });
+        const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
+        if (dumpMsg && dumpMsg.MSG) {
+          fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
+          data = dumpMsg.MSG;
+        }
       }
       if (!data) {
         res.writeHead(404);
@@ -594,6 +688,30 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  // /api/restart — restart service (close WS and reconnect)
+  if (pathname === '/api/restart') {
+    try {
+      isLoggedIn = false;
+      if (persistentClient.ws) {
+        persistentClient.close();
+      }
+      // Wait a bit before reconnecting
+      setTimeout(async () => {
+        try {
+          await ensureConnectedAndLoggedIn();
+        } catch (e) {
+          console.log('[RESTART][ERROR]', e.message);
+        }
+      }, 1000);
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, message: 'Service restart initiated' }));
+    } catch (e) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+    return;
+  }
+
   // Example: /api/any — universal proxy for SCADA requests (POST)
   if (pathname === '/api/any' && req.method === 'POST') {
     let body = '';
@@ -632,6 +750,7 @@ server.listen(PORT, () => {
   console.log(`  GET  /api/dump_devm_param_names?did=DEVICE_ID&node_id=NODE_ID — get all id and label from VALUE`);
   console.log(`  GET  /api/dump_devm_alarm?did=DEVICE_ID&node_id=NODE_ID — get EXTRA.Alarm object`);
   console.log(`  GET  /api/dump_devm_leds?did=DEVICE_ID&node_id=NODE_ID — get EXTRA.Leds object`);
+  console.log(`  GET  /api/restart — restart WebSocket connection`);
   console.log(`  POST /api/any  (body=Request)`);
   console.log(`\nFile naming: dump_devm_{node_id}_{did}.json (e.g. dump_devm_12345_17693.json)`);
   console.log(`If did or node_id is not provided, did and node_id from config.json are used.`);
