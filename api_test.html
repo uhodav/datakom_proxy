@@ -6,7 +6,18 @@
   <style>
     body { font-family: Arial, sans-serif; margin: 2em; }
     button { margin: 0.5em 0.5em 0.5em 0; padding: 0.5em 1em; }
-    #result { margin-top: 2em; white-space: pre; background: #f8f8f8; border: 1px solid #ccc; padding: 1em; }
+    #result { 
+      margin-top: 2em; 
+      white-space: pre-wrap; 
+      background: #f8f8f8; 
+      border: 1px solid #ccc; 
+      padding: 1em;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: auto;
+      max-height: 600px;
+    }
   </style>
 </head>
 <style>
@@ -26,6 +37,7 @@
   <h2>Datakom Proxy API Test</h2>
   <div class="block-btns">
     <div class="block-btns_item"><button onclick="callApi('health')">Server status</button><div class="btn-hint">Check server health status</div></div>
+    <div class="block-btns_item"><button onclick="callApi('restart')">Server restart</button><div class="btn-hint">Restart server</div></div>
     <div class="block-btns_item"><button onclick="callApi('node_list')">Devices</button><div class="btn-hint">Get the list of user nodes</div></div>
     <div class="block-btns_item">
       <div>
@@ -72,6 +84,17 @@
   
   <div id="result" style="white-space: break-spaces; overflow: auto; max-height: 300px;">The answer will appear here...</div>
   <script>
+    // Helper to format JSON response
+    function formatResponse(text) {
+      try {
+        const json = JSON.parse(text);
+        return JSON.stringify(json, null, 2);
+      } catch (e) {
+        // If not JSON, return as is
+        return text;
+      }
+    }
+    
     // Helper to build ?did=...&node_id=... for API calls
     function buildDidNodeId(prefix) {
       const did = document.getElementById(prefix + '_did')?.value.trim();
@@ -93,7 +116,7 @@
         const apiBase = getApiBase();
         const res = await fetch(apiBase + endpoint);
         const text = await res.text();
-        document.getElementById('result').textContent = text;
+        document.getElementById('result').textContent = formatResponse(text);
       } catch (e) {
         document.getElementById('result').textContent = 'Error: ' + e;
       }
@@ -109,7 +132,7 @@
           body: JSON.stringify(body)
         });
         const text = await res.text();
-        document.getElementById('result').textContent = text;
+        document.getElementById('result').textContent = formatResponse(text);
       } catch (e) {
         document.getElementById('result').textContent = 'Error: ' + e;
       }

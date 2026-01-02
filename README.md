@@ -53,6 +53,31 @@ All runtime JSON files (device dumps, lists, config, state, version) are now sto
 
 - The server logs warnings and errors for file operations and connection issues.
 - Connection state is always saved to `data/state.json`.
+- Progressive reconnection delay increases after each failure (30→40→50→...minutes)
+- During pause, all API requests serve cached data from files
+
+## Connection States
+
+The server manages connection lifecycle with the following states:
+
+| State           | Description                                                    |
+|-----------------|----------------------------------------------------------------|
+| **Connected**   | Active WebSocket connection to SCADA                           |
+| **Connecting**  | Attempting to establish connection                             |
+| **Authorization**| Authenticating with SCADA server                              |
+| **Paused**      | Waiting before next reconnect attempt (progressive delay)      |
+| **Waiting**     | Scheduled 10-minute maintenance disconnect (happens hourly)    |
+| **No connection**| Initial state or after manual disconnect                      |
+| **Error**       | Connection error occurred                                      |
+
+### Connection Behavior:
+
+- **After 50 minutes** of successful connection: automatic 10-minute disconnect (state: `Waiting`)
+- **After connection error**: progressive wait time before retry (state: `Paused`)
+  - First failure: 30 minutes
+  - Each subsequent failure: +10 minutes (max typically ~90+ minutes)
+- **During Paused or Waiting**: all API requests return cached data from files
+- **Manual restart**: use `/api/restart` to reset wait time and reconnect immediately
 
 ## Dependencies
 
@@ -111,7 +136,7 @@ The server runs on port `8765`.
 
 | Method | URL & Query Parameters                                                                 | Description                                 |
 |--------|----------------------------------------------------------------------------------------|---------------------------------------------|
-| GET    | `/api/health`                                                                          | Server health check                         |
+| GET    | `/api/health`                                                                          | Server health check (connection state, timing info, last error) |
 | GET    | `/api/node_list`                                                                       | Get user node list                          |
 | GET    | `/api/devx_list?node_id=NODE_ID`                                                       | Get device list for node                    |
 | GET    | `/api/dump_devm?did=DEVICE_ID&node_id=NODE_ID&id=ID1,ID2,...`                          | Get parameters (all or by id) for device/node|
@@ -149,15 +174,61 @@ If not provided, node_id is taken from config.json.
 ### API Request Examples
 
 ```bash
+# Check server health and connection state
+curl http://localhost:8765/api/health
+
+# Get node list
 curl http://localhost:8765/api/node_list
+
+# Get device list for specific node
 curl "http://localhost:8765/api/devx_list?node_id=12345"
+
+# Get all device parameters
 curl "http://localhost:8765/api/dump_devm?did=17693&node_id=12345"
+
+# Get specific parameters by ID
 curl "http://localhost:8765/api/dump_devm?id=293,274,275&did=17693&node_id=12345"
+
+# Get parameter names and IDs
 curl "http://localhost:8765/api/dump_devm_param_names?did=17693&node_id=12345"
+
+# Get alarm status
 curl "http://localhost:8765/api/dump_devm_alarm?did=17693&node_id=12345"
+
+# Get LED states
 curl "http://localhost:8765/api/dump_devm_leds?did=17693&node_id=12345"
+
+# Restart connection (reset wait time)
 curl http://localhost:8765/api/restart
 ```
+
+### `/api/health` Response Example
+
+```json
+{
+  "status": "ok",
+  "time": "2026-01-02T06:27:07.637Z",
+  "connect_state": "Paused",
+  "date_time_change_state": "2026-01-02T06:26:51.128Z",
+  "reconnect_wait_minutes": 90,
+  "next_reconnect_time": "2026-01-02T07:56:51.128Z",
+  "last_error": {
+    "timestamp": "2026-01-02T06:26:51.128Z",
+    "message": "read ECONNRESET",
+    "code": "ECONNRESET",
+    "stack": "Error: read ECONNRESET\n    at TLSWrap.onStreamRead..."
+  }
+}
+```
+
+**Response Fields:**
+- `status` — Always "ok" (server is running)
+- `time` — Current server time
+- `connect_state` — Current connection state (see Connection States above)
+- `date_time_change_state` — Timestamp of last state change
+- `reconnect_wait_minutes` — Wait time before next reconnect attempt (Paused state only)
+- `next_reconnect_time` — Calculated time of next reconnect attempt
+- `last_error` — Last connection error (null if no errors)
 
 ### Test Page
 

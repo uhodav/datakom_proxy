@@ -85,7 +85,9 @@ ERROR: 'Error',
 RECONNECTING: 'Reconnect',
 AUTHENTICATING: 'Authorization',
 WAITING_CHALLENGE: 'Waiting for fedai',
-CONNECTING: 'Connecting'
+CONNECTING: 'Connecting',
+PAUSED: 'Paused',
+WAITING: 'Waiting'
 };
 
 function loadConfig() {
@@ -98,10 +100,218 @@ function loadConfig() {
 
 function saveState(state) {
   try {
-    fs.writeFileSync(STATE_PATH, JSON.stringify({ connect_state: state }, null, 2), 'utf-8');
+    const stateData = {
+      connect_state: state,
+      date_time_change_state: new Date().toISOString()
+    };
+    fs.writeFileSync(STATE_PATH, JSON.stringify(stateData, null, 2), 'utf-8');
   } catch (e) {
     console.log('[WARN] Could not save state:', e.message);
   }
+}
+
+function saveConnectionError(error) {
+  try {
+    const errorData = {
+      timestamp: new Date().toISOString(),
+      message: error.message || String(error),
+      code: error.code || null,
+      stack: error.stack || null
+    };
+    const errorPath = path.join(DATA_DIR, 'connected_error.json');
+    fs.writeFileSync(errorPath, JSON.stringify(errorData, null, 2), 'utf-8');
+  } catch (e) {
+    console.log('[WARN] Could not save connection error:', e.message);
+  }
+}
+
+function clearConnectionError() {
+  try {
+    const errorPath = path.join(DATA_DIR, 'connected_error.json');
+    if (fs.existsSync(errorPath)) {
+      fs.unlinkSync(errorPath);
+      console.log('[RECONNECT] Cleared previous connection error');
+    }
+  } catch (e) {
+    console.log('[WARN] Could not clear connection error:', e.message);
+  }
+}
+
+function getStateData() {
+  try {
+    const stateData = fs.readFileSync(STATE_PATH, 'utf-8');
+    return JSON.parse(stateData);
+  } catch (e) {
+    return { connect_state: CONNECT_ENUM.NO_CONNECTION, date_time_change_state: null };
+  }
+}
+
+function shouldDisconnectForMaintenance() {
+  try {
+    const stateData = getStateData();
+    if (stateData.connect_state !== CONNECT_ENUM.CONNECTED) return false;
+    if (!stateData.date_time_change_state) return false;
+    
+    const lastChange = new Date(stateData.date_time_change_state);
+    const now = new Date();
+    const minutesPassed = (now - lastChange) / (1000 * 60);
+    
+    // If 50 minutes passed since connection - disconnect
+    if (minutesPassed >= 50) {
+      console.log('[MAINTENANCE] 50 minutes passed, disconnecting for 10 minutes maintenance');
+      return true;
+    }
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+function canReconnectAfterMaintenance() {
+  try {
+    const stateData = getStateData();
+    if (stateData.connect_state !== CONNECT_ENUM.WAITING) return true;
+    if (!stateData.date_time_change_state) return true;
+    
+    const lastChange = new Date(stateData.date_time_change_state);
+    const now = new Date();
+    const minutesPassed = (now - lastChange) / (1000 * 60);
+    
+    // If 10 minutes passed since disconnect - can reconnect
+    if (minutesPassed >= 10) {
+      console.log('[MAINTENANCE] 10 minutes passed, can reconnect');
+      return true;
+    }
+    
+    const remainingMinutes = Math.ceil(10 - minutesPassed);
+    console.log(`[MAINTENANCE] Still waiting ${remainingMinutes} minutes before reconnect`);
+    return false;
+  } catch (e) {
+    return true;
+  }
+}
+
+function canAttemptReconnect(forceLog = false) {
+  try {
+    const stateData = getStateData();
+    const config = loadConfig();
+    
+    // If state is PAUSED and date_time_change_state exists
+    if (stateData.connect_state === CONNECT_ENUM.PAUSED && stateData.date_time_change_state) {
+      const waitMinutes = config.reconnect_wait_minutes || 30;
+      const lastAttempt = new Date(stateData.date_time_change_state);
+      const now = new Date();
+      const minutesPassed = (now - lastAttempt) / (1000 * 60);
+      
+      if (minutesPassed >= waitMinutes) {
+        console.log(`[RECONNECT] Wait time ${waitMinutes} minutes passed, attempting reconnect`);
+        return true;
+      }
+      
+      const remainingMinutes = Math.ceil(waitMinutes - minutesPassed);
+      // Log only once every 5 minutes to avoid spam
+      const nowTime = Date.now();
+      if (forceLog || nowTime - lastReconnectLogTime > RECONNECT_LOG_INTERVAL) {
+        console.log(`[RECONNECT] Still waiting ${remainingMinutes} minutes before next attempt`);
+        lastReconnectLogTime = nowTime;
+      }
+      return false;
+    }
+    
+    return true;
+  } catch (e) {
+    return true;
+  }
+}
+
+function handleConnectionFailure() {
+  try {
+    const config = loadConfig();
+    const currentWait = config.reconnect_wait_minutes || 30;
+    const newWait = currentWait + 10;
+    
+    config.reconnect_wait_minutes = newWait;
+    
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+    console.log(`[RECONNECT] Connection failed. Next wait time: ${newWait} minutes`);
+  } catch (e) {
+    console.log('[WARN] Could not update reconnect config:', e.message);
+  }
+}
+
+function resetReconnectConfig() {
+  try {
+    const config = loadConfig();
+    config.reconnect_wait_minutes = 30;
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
+    console.log('[RECONNECT] Connection successful, reset wait time to 30 minutes');
+  } catch (e) {
+    console.log('[WARN] Could not reset reconnect config:', e.message);
+  }
+}
+
+async function tryConnectIfReady() {
+  // If already connected - return true immediately
+  if (persistentClient.ws && persistentClient.ws.readyState === WebSocket.OPEN && isLoggedIn) {
+    return true;
+  }
+  
+  // Log current state only once every 5 minutes during pause
+  const nowTime = Date.now();
+  const shouldLog = nowTime - lastReconnectLogTime > RECONNECT_LOG_INTERVAL;
+  
+  if (shouldLog) {
+    console.log(`[API] Current connection state: ${persistentClient.state}`);
+  }
+  
+  // If WAITING mode - check if we can reconnect
+  if (persistentClient.state === CONNECT_ENUM.WAITING) {
+    if (canReconnectAfterMaintenance()) {
+      console.log('[API] Maintenance period expired, attempting to reconnect...');
+      try {
+        await ensureConnectedAndLoggedIn();
+        return true;
+      } catch (e) {
+        console.log('[API] Reconnect after maintenance failed:', e.message);
+        return false;
+      }
+    } else {
+      if (shouldLog) {
+        console.log('[API] Service is in maintenance mode, serving data from files');
+      }
+      return false;
+    }
+  }
+  
+  if (persistentClient.state === CONNECT_ENUM.PAUSED) {
+    if (canAttemptReconnect(shouldLog)) {
+      console.log('[API] Pause expired, attempting to reconnect...');
+      try {
+        await ensureConnectedAndLoggedIn();
+        return true;
+      } catch (e) {
+        console.log('[API] Reconnect failed:', e.message);
+        return false;
+      }
+    } else {
+      if (shouldLog) {
+        console.log('[API] Service is paused, serving data from files');
+      }
+      return false;
+    }
+  }
+  
+  // If not connected and not paused - try to connect
+  if (canAttemptReconnect()) {
+    try {
+      await ensureConnectedAndLoggedIn();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  
+  return false;
 }
 
 function calculateFedai(fedaiString) {
@@ -162,22 +372,43 @@ class RainbowClient {
         return Promise.resolve();
       }
       this.setState(CONNECT_ENUM.CONNECTING);
+      clearConnectionError();
+      console.log('[WS][CONNECT] Connecting to:', this.config.ws_url);
       return new Promise((resolve, reject) => {
         this.ws = new WebSocket(this.config.ws_url, { rejectUnauthorized: false });
+        
+        this.ws.on('unexpected-response', (request, response) => {
+          console.log('[WS][UNEXPECTED] Status:', response.statusCode, response.statusMessage);
+          let body = '';
+          response.on('data', chunk => body += chunk.toString());
+          response.on('end', () => console.log('[WS][UNEXPECTED] Body:', body));
+        });
+        
         this.ws.on('open', () => {
+          console.log('[WS][OPEN] Connection established');
           this.setState(CONNECT_ENUM.WAITING_CHALLENGE);
           resolve();
         });
         this.ws.on('error', (err) => {
-          this.setState(CONNECT_ENUM.ERROR);
           console.error(`[WS][ERROR]:`, err.message);
+          this.setState(CONNECT_ENUM.PAUSED);
+          saveConnectionError(err);
+          handleConnectionFailure();
           reject(err);
         });
         this.ws.on('close', (code, reason) => {
           isLoggedIn = false;
-          this.setState(CONNECT_ENUM.RECONNECTING);
+          // If code 1006 or 1002 - it's abnormal close, set pause
+          if (code === 1006 || code === 1002) {
+            this.setState(CONNECT_ENUM.PAUSED);
+            handleConnectionFailure();
+          } else {
+            this.setState(CONNECT_ENUM.NO_CONNECTION);
+          }
+          const closeError = new Error(`WebSocket closed: code=${code}, reason=${reason}`);
+          closeError.code = code;
+          saveConnectionError(closeError);
           console.log(`[WS][CLOSE]: code=${code}, reason=${reason}`);
-          //this.login();
         });
         this.ws.on('message', (data) => {
           let msg = null;
@@ -196,6 +427,7 @@ class RainbowClient {
       });
     }
     handleMessage(msg) {
+      console.log('[WS][MSG]:', JSON.stringify(msg).substring(0, 200));
       if (msg.Request === 'dump_devm' && msg.MSG) {
         this.saveDumpDevm(msg.MSG);
       } else if (msg.Binary && msg.Data) {
@@ -312,6 +544,19 @@ class RainbowClient {
       if (this.ws) this.ws.close();
       this.setState(CONNECT_ENUM.NO_CONNECTION);
     }
+    
+    disconnectForMaintenance() {
+      console.log('[MAINTENANCE] Disconnecting for 10 minutes maintenance...');
+      isLoggedIn = false;
+      if (this.ws) {
+        try {
+          this.ws.close();
+        } catch (e) {
+          console.log('[MAINTENANCE][WARN] Error closing WebSocket:', e.message);
+        }
+      }
+      this.setState(CONNECT_ENUM.WAITING);
+    }
 }
 
 
@@ -322,11 +567,27 @@ const persistentClient = new RainbowClient();
 let isLoggedIn = false;
 let isConnecting = false;
 let connectPromise = null;
+let lastReconnectLogTime = 0;
+const RECONNECT_LOG_INTERVAL = 5 * 60 * 1000; // Log once every 5 minutes
 
 async function ensureConnectedAndLoggedIn() {
   if (persistentClient.ws && persistentClient.ws.readyState === WebSocket.OPEN && isLoggedIn) {
     return;
   }
+  
+  // Check if in WAITING mode
+  if (persistentClient.state === CONNECT_ENUM.WAITING) {
+    if (!canReconnectAfterMaintenance()) {
+      throw new Error('Connection is in maintenance mode. Waiting before reconnect.');
+    }
+  }
+  
+  // Check if we can attempt to reconnect
+  if (!canAttemptReconnect()) {
+    persistentClient.setState(CONNECT_ENUM.PAUSED);
+    throw new Error('Connection is paused. Waiting before next reconnect attempt.');
+  }
+  
   if (isConnecting && connectPromise) {
     await connectPromise;
     return;
@@ -338,6 +599,7 @@ async function ensureConnectedAndLoggedIn() {
       if (!isLoggedIn) {
         await persistentClient.login();
         isLoggedIn = true;
+        resetReconnectConfig();
       }
       
       let config = loadConfig();
@@ -361,6 +623,9 @@ async function ensureConnectedAndLoggedIn() {
       }
     } catch (e) {
       console.log('[LOGIN][ERROR]', e.message);
+      saveConnectionError(e);
+      handleConnectionFailure();
+      persistentClient.setState(CONNECT_ENUM.PAUSED);
       isLoggedIn = false;
       if (persistentClient.ws) try { persistentClient.ws.close(); } catch {}
     } finally {
@@ -392,16 +657,46 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === '/api/health') {
     let connect_state = null;
+    let last_error = null;
+    let date_time_change_state = null;
+    let reconnect_wait_minutes = null;
+    let next_reconnect_time = null;
+    
     try {
       const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
       const stateObj = JSON.parse(stateData);
       connect_state = stateObj.connect_state || null;
+      date_time_change_state = stateObj.date_time_change_state || null;
+      
+      // Calculate next reconnect time if in Paused or Waiting state
+      if (date_time_change_state) {
+        const config = loadConfig();
+        reconnect_wait_minutes = config.reconnect_wait_minutes || null;
+        
+        if (connect_state === 'Paused' && reconnect_wait_minutes) {
+          const lastChange = new Date(date_time_change_state);
+          const nextReconnect = new Date(lastChange.getTime() + reconnect_wait_minutes * 60 * 1000);
+          next_reconnect_time = nextReconnect.toISOString();
+        } else if (connect_state === 'Waiting') {
+          const lastChange = new Date(date_time_change_state);
+          const nextReconnect = new Date(lastChange.getTime() + 10 * 60 * 1000);
+          next_reconnect_time = nextReconnect.toISOString();
+        }
+      }
+    } catch {}
+    try {
+      const errorData = fs.readFileSync(path.join(DATA_DIR, 'connected_error.json'), 'utf-8');
+      last_error = JSON.parse(errorData);
     } catch {}
     res.writeHead(200);
     res.end(JSON.stringify({
       status: 'ok',
       time: new Date().toISOString(),
-      connect_state
+      connect_state,
+      date_time_change_state,
+      reconnect_wait_minutes,
+      next_reconnect_time,
+      last_error
     }));
     return;
   }
@@ -413,46 +708,33 @@ const server = http.createServer(async (req, res) => {
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = getDumpDevmFileName(node_id, did);
       const dumpPath = path.join(DATA_DIR, dumpFile);
-      let connect_state = null;
-      try {
-        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
-        const stateObj = JSON.parse(stateData);
-        connect_state = stateObj.connect_state || null;
-      } catch {}
-      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(dumpPath)) {
+      
+      const isConnected = await tryConnectIfReady();
+      
+      if (isConnected && !fs.existsSync(dumpPath)) {
+        persistentClient.send({ Request: 'dump_devm', did, node_id });
+        const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
+        if (dumpMsg && dumpMsg.MSG) {
+          fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
+        }
+      }
+      
+      // Try to read from file
+      if (fs.existsSync(dumpPath)) {
         const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
         let params = [];
         if (data && data.VALUE && Array.isArray(data.VALUE)) {
           params = data.VALUE.filter(item => item.A !== undefined && item.N).map(item => ({ id: item.A, label: item.N }));
         }
         res.writeHead(200);
-        res.end(JSON.stringify({ success: true, params }));
-        return;
-      } else if (!fs.existsSync(dumpPath)) {
-        // No file, try to login and fetch from WS
-        await ensureConnectedAndLoggedIn();
-        persistentClient.send({ Request: 'dump_devm', did, node_id });
-        // Wait for dump_devm message
-        const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
-        if (dumpMsg && dumpMsg.MSG) {
-          fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
-          let params = [];
-          if (dumpMsg.MSG.VALUE && Array.isArray(dumpMsg.MSG.VALUE)) {
-            params = dumpMsg.MSG.VALUE.filter(item => item.A !== undefined && item.N).map(item => ({ id: item.A, label: item.N }));
-          }
-          res.writeHead(200);
-          res.end(JSON.stringify({ success: true, params }));
-          return;
-        } else {
-          res.writeHead(404);
-          res.end(JSON.stringify({ success: false, error: 'No dump_devm data available from WS' }));
-          return;
-        }
-      } else {
-        res.writeHead(404);
-        res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
+        res.end(JSON.stringify({ success: true, params, cached: !isConnected }));
         return;
       }
+      
+      // If file doesn't exist - return null
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, params: null, cached: true }));
+      return;
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
@@ -467,38 +749,30 @@ const server = http.createServer(async (req, res) => {
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = `dump_devm_${node_id}_${did}.json`;
       const dumpPath = path.join(DATA_DIR, dumpFile);
-      let connect_state = null;
-      try {
-        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
-        const stateObj = JSON.parse(stateData);
-        connect_state = stateObj.connect_state || null;
-      } catch {}
-      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(dumpPath)) {
-        const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
-        const alarm = data && data.EXTRA && data.EXTRA.Alarm ? data.EXTRA.Alarm : null;
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, alarm }));
-        return;
-      } else if (!fs.existsSync(dumpPath)) {
-        await ensureConnectedAndLoggedIn();
+      
+      const isConnected = await tryConnectIfReady();
+      
+      if (isConnected && !fs.existsSync(dumpPath)) {
         persistentClient.send({ Request: 'dump_devm', did, node_id });
         const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
         if (dumpMsg && dumpMsg.MSG) {
           fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
-          const alarm = dumpMsg.MSG.EXTRA && dumpMsg.MSG.EXTRA.Alarm ? dumpMsg.MSG.EXTRA.Alarm : null;
-          res.writeHead(200);
-          res.end(JSON.stringify({ success: true, alarm }));
-          return;
-        } else {
-          res.writeHead(404);
-          res.end(JSON.stringify({ success: false, error: 'No dump_devm data available from WS' }));
-          return;
         }
-      } else {
-        res.writeHead(404);
-        res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
+      }
+      
+      // Try to read from file
+      if (fs.existsSync(dumpPath)) {
+        const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
+        const alarm = data && data.EXTRA && data.EXTRA.Alarm ? data.EXTRA.Alarm : null;
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, alarm, cached: !isConnected }));
         return;
       }
+      
+      // If file doesn't exist - return null
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, alarm: null, cached: true }));
+      return;
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
@@ -513,38 +787,30 @@ const server = http.createServer(async (req, res) => {
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = `dump_devm_${node_id}_${did}.json`;
       const dumpPath = path.join(DATA_DIR, dumpFile);
-      let connect_state = null;
-      try {
-        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
-        const stateObj = JSON.parse(stateData);
-        connect_state = stateObj.connect_state || null;
-      } catch {}
-      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(dumpPath)) {
-        const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
-        const leds = data && data.EXTRA && data.EXTRA.Leds ? data.EXTRA.Leds : null;
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, leds }));
-        return;
-      } else if (!fs.existsSync(dumpPath)) {
-        await ensureConnectedAndLoggedIn();
+      
+      const isConnected = await tryConnectIfReady();
+      
+      if (isConnected && !fs.existsSync(dumpPath)) {
         persistentClient.send({ Request: 'dump_devm', did, node_id });
         const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
         if (dumpMsg && dumpMsg.MSG) {
           fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
-          const leds = dumpMsg.MSG.EXTRA && dumpMsg.MSG.EXTRA.Leds ? dumpMsg.MSG.EXTRA.Leds : null;
-          res.writeHead(200);
-          res.end(JSON.stringify({ success: true, leds }));
-          return;
-        } else {
-          res.writeHead(404);
-          res.end(JSON.stringify({ success: false, error: 'No dump_devm data available from WS' }));
-          return;
         }
-      } else {
-        res.writeHead(404);
-        res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
+      }
+      
+      // Try to read from file
+      if (fs.existsSync(dumpPath)) {
+        const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
+        const leds = data && data.EXTRA && data.EXTRA.Leds ? data.EXTRA.Leds : null;
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, leds, cached: !isConnected }));
         return;
       }
+      
+      // If file doesn't exist - return null
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, leds: null, cached: true }));
+      return;
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
@@ -555,31 +821,30 @@ const server = http.createServer(async (req, res) => {
   // Example: /api/node_list — get node_list via persistent WS
   if (pathname === '/api/node_list') {
     const nodeListPath = path.join(DATA_DIR, 'node_list.json');
-    let connect_state = null;
     try {
-      try {
-        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
-        const stateObj = JSON.parse(stateData);
-        connect_state = stateObj.connect_state || null;
-      } catch {}
-      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(nodeListPath)) {
-        const nodeList = JSON.parse(fs.readFileSync(nodeListPath, 'utf-8'));
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, data: nodeList }));
-        return;
-      } else if (!fs.existsSync(nodeListPath)) {
-        await ensureConnectedAndLoggedIn();
+      const isConnected = await tryConnectIfReady();
+      
+      if (isConnected) {
         persistentClient.send({ Request: 'node_list' });
         const nodeList = await persistentClient.waitForMessage('node_list', 10000);
         fs.writeFileSync(nodeListPath, JSON.stringify(nodeList, null, 2), 'utf-8');
         res.writeHead(200);
         res.end(JSON.stringify({ success: true, data: nodeList }));
         return;
-      } else {
-        res.writeHead(404);
-        res.end(JSON.stringify({ success: false, error: 'No node_list data available' }));
+      }
+      
+      // If not connected - try to return data from file
+      if (fs.existsSync(nodeListPath)) {
+        const nodeList = JSON.parse(fs.readFileSync(nodeListPath, 'utf-8'));
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, data: nodeList, cached: true }));
         return;
       }
+      
+      // If file doesn't exist - return null
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, data: null, cached: true }));
+      return;
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
@@ -596,31 +861,30 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const devxListPath = path.join(DATA_DIR, `devx_list_${nodeId}.json`);
-    let connect_state = null;
     try {
-      try {
-        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
-        const stateObj = JSON.parse(stateData);
-        connect_state = stateObj.connect_state || null;
-      } catch {}
-      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(devxListPath)) {
-        const devxList = JSON.parse(fs.readFileSync(devxListPath, 'utf-8'));
-        res.writeHead(200);
-        res.end(JSON.stringify({ success: true, data: devxList }));
-        return;
-      } else if (!fs.existsSync(devxListPath)) {
-        await ensureConnectedAndLoggedIn();
+      const isConnected = await tryConnectIfReady();
+      
+      if (isConnected) {
         persistentClient.send({ Request: 'devx_list', Node: nodeId, Skip: 0 });
         const devxList = await persistentClient.waitForMessage('devx_list', 10000);
         fs.writeFileSync(devxListPath, JSON.stringify(devxList, null, 2), 'utf-8');
         res.writeHead(200);
         res.end(JSON.stringify({ success: true, data: devxList }));
         return;
-      } else {
-        res.writeHead(404);
-        res.end(JSON.stringify({ success: false, error: 'No devx_list data available' }));
+      }
+      
+      // If not connected - try to return data from file
+      if (fs.existsSync(devxListPath)) {
+        const devxList = JSON.parse(fs.readFileSync(devxListPath, 'utf-8'));
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, data: devxList, cached: true }));
         return;
       }
+      
+      // If file doesn't exist - return null
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, data: null, cached: true }));
+      return;
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
@@ -636,29 +900,28 @@ const server = http.createServer(async (req, res) => {
       const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
       const dumpFile = `dump_devm_${node_id}_${did}.json`;
       const dumpPath = path.join(DATA_DIR, dumpFile);
-      let connect_state = null;
-      try {
-        const stateData = fs.readFileSync(path.join(DATA_DIR, 'state.json'), 'utf-8');
-        const stateObj = JSON.parse(stateData);
-        connect_state = stateObj.connect_state || null;
-      } catch {}
-      let data = null;
-      if (connect_state === CONNECT_ENUM.CONNECTED && fs.existsSync(dumpPath)) {
-        data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
-      } else if (!fs.existsSync(dumpPath)) {
-        await ensureConnectedAndLoggedIn();
+      
+      const isConnected = await tryConnectIfReady();
+      
+      if (isConnected && !fs.existsSync(dumpPath)) {
         persistentClient.send({ Request: 'dump_devm', did, node_id });
         const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
         if (dumpMsg && dumpMsg.MSG) {
           fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
-          data = dumpMsg.MSG;
         }
       }
+      
+      let data = null;
+      if (fs.existsSync(dumpPath)) {
+        data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
+      }
+      
       if (!data) {
-        res.writeHead(404);
-        res.end(JSON.stringify({ success: false, error: 'No dump_devm data available' }));
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, result: null, cached: true }));
         return;
       }
+      
       let ids = [];
       if (parsedUrl.query.id) {
         if (Array.isArray(parsedUrl.query.id)) {
@@ -681,7 +944,7 @@ const server = http.createServer(async (req, res) => {
         }));
       }
       res.writeHead(200);
-      res.end(JSON.stringify({ success: true, result }));
+      res.end(JSON.stringify({ success: true, result, cached: !isConnected }));
     } catch (e) {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
@@ -695,6 +958,8 @@ const server = http.createServer(async (req, res) => {
       if (persistentClient.ws) {
         persistentClient.close();
       }
+      // Reset pause and wait settings
+      resetReconnectConfig();
       // Wait a bit before reconnecting
       setTimeout(async () => {
         try {
@@ -758,5 +1023,18 @@ server.listen(PORT, () => {
   // Automatic login on startup
   ensureConnectedAndLoggedIn().catch(e => {
     console.log('[AUTOLOGIN][ERROR]', e.message);
+    saveConnectionError(e);
   });
+  
+  // Periodic check for disconnect once per hour (check every 5 minutes)
+  setInterval(() => {
+    if (shouldDisconnectForMaintenance()) {
+      persistentClient.disconnectForMaintenance();
+    } else if (persistentClient.state === CONNECT_ENUM.WAITING && canReconnectAfterMaintenance()) {
+      console.log('[MAINTENANCE] Attempting to reconnect after maintenance...');
+      ensureConnectedAndLoggedIn().catch(e => {
+        console.log('[MAINTENANCE][ERROR]', e.message);
+      });
+    }
+  }, 5 * 60 * 1000); // Check every 5 minutes
 });
