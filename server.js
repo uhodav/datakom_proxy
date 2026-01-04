@@ -2,9 +2,65 @@ const path = require('path');
 const fs = require('fs');
 
 const DATA_DIR = path.join(__dirname, 'data');
+const LOG_FILE = path.join(__dirname, 'log.txt');
+const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
+const MAX_LOG_FILES = 5;
+
+// Logger with rotation
+function log(level, ...args) {
+  const timestamp = new Date().toISOString();
+  const message = `[${timestamp}] [${level}] ${args.join(' ')}`;
+  
+  // Console output
+  console.log(message);
+  
+  // File output with rotation
+  try {
+    // Check if log file needs rotation
+    if (fs.existsSync(LOG_FILE)) {
+      const stats = fs.statSync(LOG_FILE);
+      if (stats.size >= MAX_LOG_SIZE) {
+        rotateLog();
+      }
+    } else {
+      // Create log file if it doesn't exist
+      fs.writeFileSync(LOG_FILE, '', 'utf-8');
+    }
+    
+    fs.appendFileSync(LOG_FILE, message + '\n', 'utf-8');
+  } catch (e) {
+    console.error('[LOG][ERROR]', e.message);
+  }
+}
+
+function rotateLog() {
+  try {
+    // Remove oldest log if exists
+    const oldestLog = LOG_FILE.replace('.txt', `.${MAX_LOG_FILES}.txt`);
+    if (fs.existsSync(oldestLog)) {
+      fs.unlinkSync(oldestLog);
+    }
+    
+    // Rotate existing logs
+    for (let i = MAX_LOG_FILES - 1; i >= 1; i--) {
+      const currentLog = LOG_FILE.replace('.txt', `.${i}.txt`);
+      const nextLog = LOG_FILE.replace('.txt', `.${i + 1}.txt`);
+      if (fs.existsSync(currentLog)) {
+        fs.renameSync(currentLog, nextLog);
+      }
+    }
+    
+    // Rename current log to .1.txt
+    fs.renameSync(LOG_FILE, LOG_FILE.replace('.txt', '.1.txt'));
+    log('INFO', 'Log rotated successfully');
+  } catch (e) {
+    console.error('[LOG][ROTATE][ERROR]', e.message);
+  }
+}
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  log('INFO', 'Created data directory:', DATA_DIR);
 }
 
 function getIntFromQueryOrConfig(query, key, configKey) {
@@ -42,8 +98,9 @@ function saveBinaryPacket(data) {
     const fname = `binary.bin`;
     const fpath = path.join(__dirname, fname);
     fs.writeFileSync(fpath, Buffer.from(data, 'base64'));
+    log('INFO', 'Binary packet saved to', fname);
   } catch (e) {
-    console.log('[BINARY][ERROR]', e.message);
+    log('ERROR', 'Failed to save binary packet:', e.message);
   }
 }
 // Import error codes
@@ -68,8 +125,9 @@ try {
     version++;
   }
   fs.writeFileSync(VERSION_FILE, String(version), 'utf-8');
+  log('INFO', 'Server version:', version);
 } catch (e) {
-  console.log('[WARN] Could not update the version:', e.message);
+  log('WARN', 'Could not update the version:', e.message);
 }
 // solution_5_server/server.js
 
@@ -106,7 +164,7 @@ function saveState(state) {
     };
     fs.writeFileSync(STATE_PATH, JSON.stringify(stateData, null, 2), 'utf-8');
   } catch (e) {
-    console.log('[WARN] Could not save state:', e.message);
+    log('WARN', 'Could not save state:', e.message);
   }
 }
 
@@ -121,7 +179,7 @@ function saveConnectionError(error) {
     const errorPath = path.join(DATA_DIR, 'connected_error.json');
     fs.writeFileSync(errorPath, JSON.stringify(errorData, null, 2), 'utf-8');
   } catch (e) {
-    console.log('[WARN] Could not save connection error:', e.message);
+    log('WARN', 'Could not save connection error:', e.message);
   }
 }
 
@@ -130,10 +188,10 @@ function clearConnectionError() {
     const errorPath = path.join(DATA_DIR, 'connected_error.json');
     if (fs.existsSync(errorPath)) {
       fs.unlinkSync(errorPath);
-      console.log('[RECONNECT] Cleared previous connection error');
+      log('INFO', 'Cleared previous connection error');
     }
   } catch (e) {
-    console.log('[WARN] Could not clear connection error:', e.message);
+    log('WARN', 'Could not clear connection error:', e.message);
   }
 }
 
@@ -158,7 +216,7 @@ function shouldDisconnectForMaintenance() {
     
     // If 50 minutes passed since connection - disconnect
     if (minutesPassed >= 50) {
-      console.log('[MAINTENANCE] 50 minutes passed, disconnecting for 10 minutes maintenance');
+      log('INFO', '50 minutes passed, disconnecting for 10 minutes maintenance');
       return true;
     }
     return false;
@@ -179,12 +237,12 @@ function canReconnectAfterMaintenance() {
     
     // If 10 minutes passed since disconnect - can reconnect
     if (minutesPassed >= 10) {
-      console.log('[MAINTENANCE] 10 minutes passed, can reconnect');
+      log('INFO', '10 minutes passed, can reconnect');
       return true;
     }
     
     const remainingMinutes = Math.ceil(10 - minutesPassed);
-    console.log(`[MAINTENANCE] Still waiting ${remainingMinutes} minutes before reconnect`);
+    log('INFO', `Still waiting ${remainingMinutes} minutes before reconnect`);
     return false;
   } catch (e) {
     return true;
@@ -204,7 +262,7 @@ function canAttemptReconnect(forceLog = false) {
       const minutesPassed = (now - lastAttempt) / (1000 * 60);
       
       if (minutesPassed >= waitMinutes) {
-        console.log(`[RECONNECT] Wait time ${waitMinutes} minutes passed, attempting reconnect`);
+        log('INFO', `Wait time ${waitMinutes} minutes passed, attempting reconnect`);
         return true;
       }
       
@@ -212,7 +270,7 @@ function canAttemptReconnect(forceLog = false) {
       // Log only once every 5 minutes to avoid spam
       const nowTime = Date.now();
       if (forceLog || nowTime - lastReconnectLogTime > RECONNECT_LOG_INTERVAL) {
-        console.log(`[RECONNECT] Still waiting ${remainingMinutes} minutes before next attempt`);
+        log('INFO', `Still waiting ${remainingMinutes} minutes before next attempt`);
         lastReconnectLogTime = nowTime;
       }
       return false;
@@ -233,9 +291,9 @@ function handleConnectionFailure() {
     config.reconnect_wait_minutes = newWait;
     
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
-    console.log(`[RECONNECT] Connection failed. Next wait time: ${newWait} minutes`);
+    log('INFO', `Connection failed. Next wait time: ${newWait} minutes`);
   } catch (e) {
-    console.log('[WARN] Could not update reconnect config:', e.message);
+    log('WARN', 'Could not update reconnect config:', e.message);
   }
 }
 
@@ -244,9 +302,9 @@ function resetReconnectConfig() {
     const config = loadConfig();
     config.reconnect_wait_minutes = 30;
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
-    console.log('[RECONNECT] Connection successful, reset wait time to 30 minutes');
+    log('INFO', 'Connection successful, reset wait time to 30 minutes');
   } catch (e) {
-    console.log('[WARN] Could not reset reconnect config:', e.message);
+    log('WARN', 'Could not reset reconnect config:', e.message);
   }
 }
 
@@ -261,23 +319,23 @@ async function tryConnectIfReady() {
   const shouldLog = nowTime - lastReconnectLogTime > RECONNECT_LOG_INTERVAL;
   
   if (shouldLog) {
-    console.log(`[API] Current connection state: ${persistentClient.state}`);
+    log('INFO', `Current connection state: ${persistentClient.state}`);
   }
   
   // If WAITING mode - check if we can reconnect
   if (persistentClient.state === CONNECT_ENUM.WAITING) {
     if (canReconnectAfterMaintenance()) {
-      console.log('[API] Maintenance period expired, attempting to reconnect...');
+      log('INFO', 'Maintenance period expired, attempting to reconnect...');
       try {
         await ensureConnectedAndLoggedIn();
         return true;
       } catch (e) {
-        console.log('[API] Reconnect after maintenance failed:', e.message);
+        log('ERROR', 'Reconnect after maintenance failed:', e.message);
         return false;
       }
     } else {
       if (shouldLog) {
-        console.log('[API] Service is in maintenance mode, serving data from files');
+        log('INFO', 'Service is in maintenance mode, serving data from files');
       }
       return false;
     }
@@ -285,17 +343,17 @@ async function tryConnectIfReady() {
   
   if (persistentClient.state === CONNECT_ENUM.PAUSED) {
     if (canAttemptReconnect(shouldLog)) {
-      console.log('[API] Pause expired, attempting to reconnect...');
+      log('INFO', 'Pause expired, attempting to reconnect...');
       try {
         await ensureConnectedAndLoggedIn();
         return true;
       } catch (e) {
-        console.log('[API] Reconnect failed:', e.message);
+        log('ERROR', 'Reconnect failed:', e.message);
         return false;
       }
     } else {
       if (shouldLog) {
-        console.log('[API] Service is paused, serving data from files');
+        log('INFO', 'Service is paused, serving data from files');
       }
       return false;
     }
@@ -354,12 +412,11 @@ class RainbowClient {
         if (Array.isArray(msg.node_id) && msg.node_id.length > 0) node_id = msg.node_id[0];
         else if (typeof msg.node_id === 'number') node_id = msg.node_id;
         else node_id = (this.config && this.config.node_id) || 'unknown';
-        console.log('node_id', node_id, 'did', did);
-        console.log('this.config', this.config)
+        log('DEBUG', 'Saving dump_devm for node_id:', node_id, 'did:', did);
         const fname = getDumpDevmFileName(node_id, did);
         fs.writeFileSync(path.join(DATA_DIR, fname), JSON.stringify(msg, null, 2), 'utf-8');
       } catch (e) {
-        console.log('[DUMP_DEVM][ERROR]', e.message);
+        log('ERROR', 'Failed to save dump_devm:', e.message);
       }
     }
 
@@ -373,24 +430,24 @@ class RainbowClient {
       }
       this.setState(CONNECT_ENUM.CONNECTING);
       clearConnectionError();
-      console.log('[WS][CONNECT] Connecting to:', this.config.ws_url);
+      log('INFO', 'Connecting to:', this.config.ws_url);
       return new Promise((resolve, reject) => {
         this.ws = new WebSocket(this.config.ws_url, { rejectUnauthorized: false });
         
         this.ws.on('unexpected-response', (request, response) => {
-          console.log('[WS][UNEXPECTED] Status:', response.statusCode, response.statusMessage);
+          log('WARN', 'Unexpected response - Status:', response.statusCode, response.statusMessage);
           let body = '';
           response.on('data', chunk => body += chunk.toString());
-          response.on('end', () => console.log('[WS][UNEXPECTED] Body:', body));
+          response.on('end', () => log('WARN', 'Unexpected response body:', body));
         });
         
         this.ws.on('open', () => {
-          console.log('[WS][OPEN] Connection established');
+          log('INFO', 'WebSocket connection established');
           this.setState(CONNECT_ENUM.WAITING_CHALLENGE);
           resolve();
         });
         this.ws.on('error', (err) => {
-          console.error(`[WS][ERROR]:`, err.message);
+          log('ERROR', 'WebSocket error:', err.message);
           this.setState(CONNECT_ENUM.PAUSED);
           saveConnectionError(err);
           handleConnectionFailure();
@@ -408,7 +465,7 @@ class RainbowClient {
           const closeError = new Error(`WebSocket closed: code=${code}, reason=${reason}`);
           closeError.code = code;
           saveConnectionError(closeError);
-          console.log(`[WS][CLOSE]: code=${code}, reason=${reason}`);
+          log('WARN', 'WebSocket closed - code:', code, 'reason:', reason || 'none');
         });
         this.ws.on('message', (data) => {
           let msg = null;
@@ -427,17 +484,17 @@ class RainbowClient {
       });
     }
     handleMessage(msg) {
-      console.log('[WS][MSG]:', JSON.stringify(msg).substring(0, 200));
+      const msgPreview = JSON.stringify(msg).substring(0, 200);
+      log('DEBUG', 'Received message:', msgPreview);
       if (msg.Request === 'dump_devm' && msg.MSG) {
         this.saveDumpDevm(msg.MSG);
       } else if (msg.Binary && msg.Data) {
-        
         saveBinaryPacket(msg.Data);
       }
       if (msg.Request === 'user_warn' && (msg.ErrText === 'Multiple Logon Error' || msg.ErrCode === -1010)) {
         isLoggedIn = false;
         const errText = getErrorText(msg.ErrCode) || msg.ErrText;
-        console.log(`[RECONNECT] Multiple Logon Error: initiating reconnect... (${msg.ErrCode}: ${errText})`);
+        log('WARN', `Multiple Logon Error: initiating reconnect... (${msg.ErrCode}: ${errText})`);
         this.close();
       }
       if (msg.Request === 'usr_fedai') this.fedaiChallenge = msg.fedai;
@@ -463,7 +520,7 @@ class RainbowClient {
           try {
             fs.writeFileSync(path.join(DATA_DIR, `devx_list_${nodeId}.json`), JSON.stringify(msg, null, 2), 'utf-8');
           } catch (e) {
-            console.log('[SCADA][ERROR] Could not save devx_list:', e.message);
+            log('ERROR', 'Could not save devx_list:', e.message);
           }
         }
         // Reload config in case did was updated elsewhere
@@ -517,7 +574,7 @@ class RainbowClient {
         fs.writeFileSync(STATE_PATH, JSON.stringify({ connect_state: this.state }, null, 2), 'utf-8');
         const config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
       } catch (e) {
-        console.log('[LOGIN][ERROR] Could not save node_list:', e.message);
+        log('ERROR', 'Could not save node_list:', e.message);
       }
       // Auto-send devx_list and devx_pump for the first node
       if (nodeList && nodeList.NodeList && nodeList.NodeList.length > 0) {
@@ -529,7 +586,7 @@ class RainbowClient {
           const did = devxList.DevxList[0].did;
           this.send({ Request: 'devx_pump', job: 1, did });
         } else {
-          console.log('[AUTO] No devices for devx_pump');
+          log('WARN', 'No devices for devx_pump');
         }
       }
       return { login: loginResponse, nodes: nodeList };
@@ -546,13 +603,13 @@ class RainbowClient {
     }
     
     disconnectForMaintenance() {
-      console.log('[MAINTENANCE] Disconnecting for 10 minutes maintenance...');
+      log('INFO', 'Disconnecting for 10 minutes maintenance...');
       isLoggedIn = false;
       if (this.ws) {
         try {
           this.ws.close();
         } catch (e) {
-          console.log('[MAINTENANCE][WARN] Error closing WebSocket:', e.message);
+          log('WARN', 'Error closing WebSocket:', e.message);
         }
       }
       this.setState(CONNECT_ENUM.WAITING);
@@ -622,7 +679,7 @@ async function ensureConnectedAndLoggedIn() {
         }
       }
     } catch (e) {
-      console.log('[LOGIN][ERROR]', e.message);
+      log('ERROR', 'Login failed:', e.message);
       saveConnectionError(e);
       handleConnectionFailure();
       persistentClient.setState(CONNECT_ENUM.PAUSED);
@@ -818,6 +875,44 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // /api/dump_devm_dout — get EXTRA.Dout (digital outputs)
+  if (pathname === '/api/dump_devm_dout') {
+    try {
+      const node_id = getIntFromQueryOrConfig(parsedUrl.query, 'node_id', 'node_id');
+      const did = getIntFromQueryOrConfig(parsedUrl.query, 'did', 'did');
+      const dumpFile = `dump_devm_${node_id}_${did}.json`;
+      const dumpPath = path.join(DATA_DIR, dumpFile);
+      
+      const isConnected = await tryConnectIfReady();
+      
+      if (isConnected && !fs.existsSync(dumpPath)) {
+        persistentClient.send({ Request: 'dump_devm', did, node_id });
+        const dumpMsg = await persistentClient.waitForMessage('dump_devm', 10000);
+        if (dumpMsg && dumpMsg.MSG) {
+          fs.writeFileSync(dumpPath, JSON.stringify(dumpMsg.MSG, null, 2), 'utf-8');
+        }
+      }
+      
+      // Try to read from file
+      if (fs.existsSync(dumpPath)) {
+        const data = JSON.parse(fs.readFileSync(dumpPath, 'utf-8'));
+        const dout = data && data.EXTRA && data.EXTRA.Dout ? data.EXTRA.Dout : null;
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, dout, cached: !isConnected }));
+        return;
+      }
+      
+      // If file doesn't exist - return null
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, dout: null, cached: true }));
+      return;
+    } catch (e) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ success: false, error: e.message }));
+    }
+    return;
+  }
+
   // Example: /api/node_list — get node_list via persistent WS
   if (pathname === '/api/node_list') {
     const nodeListPath = path.join(DATA_DIR, 'node_list.json');
@@ -965,7 +1060,7 @@ const server = http.createServer(async (req, res) => {
         try {
           await ensureConnectedAndLoggedIn();
         } catch (e) {
-          console.log('[RESTART][ERROR]', e.message);
+          log('ERROR', 'Restart failed:', e.message);
         }
       }, 1000);
       res.writeHead(200);
@@ -974,6 +1069,78 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500);
       res.end(JSON.stringify({ success: false, error: e.message }));
     }
+    return;
+  }
+
+  // POST /api/device/control — Device Control commands (Run, Auto, Manual, Test, Stop)
+  if (pathname === '/api/device/control' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', async () => {
+      try {
+        let { did, action, node_id } = JSON.parse(body);
+        
+        // Use did from config if not provided (same logic as other endpoints)
+        if (!did) {
+          try {
+            const config = loadConfig();
+            did = config.did;
+          } catch {}
+        }
+        
+        if (!did) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ success: false, error: 'did is required (not found in request or config.json)' }));
+          return;
+        }
+        
+        const validActions = ['BR', 'BA', 'BM', 'BT', 'BS', 'run', 'auto', 'manual', 'test', 'stop'];
+        if (!action || !validActions.includes(action)) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ 
+            success: false, 
+            error: 'Invalid action. Use: BR/run (Run), BA/auto (Auto), BM/manual (Manual), BT/test (Test), BS/stop (Stop)' 
+          }));
+          return;
+        }
+        
+        // Convert friendly names to SCADA codes
+        const actionMap = {
+          'run': 'BR',
+          'auto': 'BA',
+          'manual': 'BM',
+          'test': 'BT',
+          'stop': 'BS'
+        };
+        const jobCode = actionMap[action.toLowerCase()] || action.toUpperCase();
+        
+        await ensureConnectedAndLoggedIn();
+        
+        const controlCmd = {
+          Request: 'dev_click',
+          job: jobCode,
+          did: Number(did),
+          cls: 'CTRL'
+        };
+        
+        log('INFO', `Sending device control command: ${jobCode} to device ${did}`);
+        persistentClient.send(controlCmd);
+        
+        // Wait a bit for potential response
+        await new Promise(r => setTimeout(r, 500));
+        
+        res.writeHead(200);
+        res.end(JSON.stringify({ 
+          success: true, 
+          message: `Command ${jobCode} sent to device ${did}`,
+          command: controlCmd
+        }));
+      } catch (e) {
+        log('ERROR', 'Device control error:', e.message);
+        res.writeHead(500);
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
     return;
   }
 
@@ -1003,26 +1170,30 @@ const server = http.createServer(async (req, res) => {
 
 const PORT = 8765;
 server.listen(PORT, () => {
-  console.log(`\n=== Rainbow SCADA Persistent HTTP+WS Server ===`);
-  console.log(`Server: http://localhost:${PORT}/api_test.html`);
-  console.log(`Persistent WebSocket: ${persistentClient.config.ws_url}`);
-  console.log(`\nEndpoints:`);
-  console.log(`  GET  /api/health`);
-  console.log(`  GET  /api/node_list`);
-  console.log(`  GET  /api/devx_list?node_id=ID`);
-  console.log(`  GET  /api/dump_devm?did=DEVICE_ID&node_id=NODE_ID — get all device parameters (array { id, label, value, unit })`);
-  console.log(`  GET  /api/dump_devm?id=ID[,ID...]&did=DEVICE_ID&node_id=NODE_ID — get parameter values by id (comma-separated)`);
-  console.log(`  GET  /api/dump_devm_param_names?did=DEVICE_ID&node_id=NODE_ID — get all id and label from VALUE`);
-  console.log(`  GET  /api/dump_devm_alarm?did=DEVICE_ID&node_id=NODE_ID — get EXTRA.Alarm object`);
-  console.log(`  GET  /api/dump_devm_leds?did=DEVICE_ID&node_id=NODE_ID — get EXTRA.Leds object`);
-  console.log(`  GET  /api/restart — restart WebSocket connection`);
-  console.log(`  POST /api/any  (body=Request)`);
-  console.log(`\nFile naming: dump_devm_{node_id}_{did}.json (e.g. dump_devm_12345_17693.json)`);
-  console.log(`If did or node_id is not provided, did and node_id from config.json are used.`);
-  console.log(`\nPress Ctrl+C to stop\n`);
+  log('INFO', '=== Rainbow SCADA Persistent HTTP+WS Server ===');
+  log('INFO', `Server: http://localhost:${PORT}/api_test.html`);
+  log('INFO', `Persistent WebSocket: ${persistentClient.config.ws_url}`);
+  log('INFO', '\nEndpoints:');
+  log('INFO', '  GET  /api/health');
+  log('INFO', '  GET  /api/node_list');
+  log('INFO', '  GET  /api/devx_list?node_id=ID');
+  log('INFO', '  GET  /api/dump_devm?did=DEVICE_ID&node_id=NODE_ID — get all device parameters');
+  log('INFO', '  GET  /api/dump_devm?id=ID[,ID...]&did=DEVICE_ID&node_id=NODE_ID — get specific parameters');
+  log('INFO', '  GET  /api/dump_devm_param_names?did=DEVICE_ID&node_id=NODE_ID — get parameter names');
+  log('INFO', '  GET  /api/dump_devm_alarm?did=DEVICE_ID&node_id=NODE_ID — get EXTRA.Alarm');
+  log('INFO', '  GET  /api/dump_devm_leds?did=DEVICE_ID&node_id=NODE_ID — get EXTRA.Leds');
+  log('INFO', '  GET  /api/dump_devm_dout?did=DEVICE_ID&node_id=NODE_ID — get EXTRA.Dout (digital outputs)');
+  log('INFO', '  GET  /api/restart — restart WebSocket connection');
+  log('INFO', '  POST /api/device/control — Device Control (Run/Auto/Manual/Test/Stop)');
+  log('INFO', '       Body: {"did": <number>, "action": "BR|BA|BM|BT|BS" or "run|auto|manual|test|stop"}');
+  log('INFO', '  POST /api/any — universal SCADA request proxy');
+  log('INFO', '\nLogging: console + log.txt (max 5MB, 5 rotations)');
+  log('INFO', 'File naming: dump_devm_{node_id}_{did}.json');
+  log('INFO', 'Press Ctrl+C to stop\n');
+
   // Automatic login on startup
   ensureConnectedAndLoggedIn().catch(e => {
-    console.log('[AUTOLOGIN][ERROR]', e.message);
+    log('ERROR', 'Autologin failed:', e.message);
     saveConnectionError(e);
   });
   
@@ -1031,9 +1202,9 @@ server.listen(PORT, () => {
     if (shouldDisconnectForMaintenance()) {
       persistentClient.disconnectForMaintenance();
     } else if (persistentClient.state === CONNECT_ENUM.WAITING && canReconnectAfterMaintenance()) {
-      console.log('[MAINTENANCE] Attempting to reconnect after maintenance...');
+      log('INFO', 'Attempting to reconnect after maintenance...');
       ensureConnectedAndLoggedIn().catch(e => {
-        console.log('[MAINTENANCE][ERROR]', e.message);
+        log('ERROR', 'Maintenance reconnect failed:', e.message);
       });
     }
   }, 5 * 60 * 1000); // Check every 5 minutes

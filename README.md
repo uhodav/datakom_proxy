@@ -143,7 +143,9 @@ The server runs on port `8765`.
 | GET    | `/api/dump_devm_param_names?did=DEVICE_ID&node_id=NODE_ID`                             | Get all id and label from VALUE for device/node|
 | GET    | `/api/dump_devm_alarm?did=DEVICE_ID&node_id=NODE_ID`                                   | Get EXTRA.Alarm object for device/node      |
 | GET    | `/api/dump_devm_leds?did=DEVICE_ID&node_id=NODE_ID`                                    | Get EXTRA.Leds object for device/node       |
+| GET    | `/api/dump_devm_dout?did=DEVICE_ID&node_id=NODE_ID`                                    | Get EXTRA.Dout array (digital outputs) for device/node |
 | GET    | `/api/restart`                                                                         | Restart WebSocket connection                |
+| POST   | `/api/device/control` (body: `{"did": <number>, "action": "run|auto|manual|test|stop"}`) | Send Device Control command (Run/Auto/Manual/Test/Stop) |
 | POST   | `/api/any` (body: JSON SCADA request)                                                  | Universal proxy request to SCADA            |
 
 **Parameters:**
@@ -167,6 +169,7 @@ You can also provide `node_id` as a query parameter to all dump_devm endpoints f
 | GET    | `/api/dump_devm_param_names?did=DEVICE_ID&node_id=NODE_ID`| Get all id and label for device and node    |
 | GET    | `/api/dump_devm_alarm?did=DEVICE_ID&node_id=NODE_ID`      | Get EXTRA.Alarm for device and node         |
 | GET    | `/api/dump_devm_leds?did=DEVICE_ID&node_id=NODE_ID`       | Get EXTRA.Leds for device and node          |
+| GET    | `/api/dump_devm_dout?did=DEVICE_ID&node_id=NODE_ID`       | Get EXTRA.Dout for device and node          |
 
 If not provided, node_id is taken from config.json.
 
@@ -197,6 +200,40 @@ curl "http://localhost:8765/api/dump_devm_alarm?did=17693&node_id=12345"
 
 # Get LED states
 curl "http://localhost:8765/api/dump_devm_leds?did=17693&node_id=12345"
+
+# Get digital outputs (Dout)
+curl "http://localhost:8765/api/dump_devm_dout?did=17693&node_id=12345"
+
+# Device Control Commands
+# Run device
+curl -X POST http://localhost:8765/api/device/control \
+  -H "Content-Type: application/json" \
+  -d '{"did": 17693, "action": "run"}'
+
+# Auto mode
+curl -X POST http://localhost:8765/api/device/control \
+  -H "Content-Type: application/json" \
+  -d '{"did": 17693, "action": "auto"}'
+
+# Manual mode
+curl -X POST http://localhost:8765/api/device/control \
+  -H "Content-Type: application/json" \
+  -d '{"did": 17693, "action": "manual"}'
+
+# Test mode
+curl -X POST http://localhost:8765/api/device/control \
+  -H "Content-Type: application/json" \
+  -d '{"did": 17693, "action": "test"}'
+
+# Stop device
+curl -X POST http://localhost:8765/api/device/control \
+  -H "Content-Type: application/json" \
+  -d '{"did": 17693, "action": "stop"}'
+
+# You can also use SCADA codes directly: BR, BA, BM, BT, BS
+curl -X POST http://localhost:8765/api/device/control \
+  -H "Content-Type: application/json" \
+  -d '{"did": 17693, "action": "BR"}'
 
 # Restart connection (reset wait time)
 curl http://localhost:8765/api/restart
@@ -240,6 +277,27 @@ Open `api_test.html` in your browser to test the API via UI.
 - ws
 - axios (optional, for extended features)
 - socks-proxy-agent (optional)
+
+## Logging
+
+The server implements automatic log rotation:
+- Logs are written to both console and `log.txt`
+- Maximum log file size: 5MB
+- Number of rotated files kept: 5 (log.1.txt, log.2.txt, ... log.5.txt)
+- When `log.txt` reaches 5MB, it's automatically rotated
+- Log format: `[ISO timestamp] [LEVEL] message`
+- Log levels: INFO, WARN, ERROR, DEBUG
+
+## Configuration
+
+All connection parameters are in `config.json`:
+- `ws_url` — WebSocket server address (wss://rm.datakom.com.tr:464)
+- `login` — user login
+- `password` — user password
+- `node_id` — (optional) default node ID
+- `did` — (optional) default device ID
+- `reconnect_wait_minutes` — wait time before reconnect after failure (default: 30)
+- `insecure_tls` — disable TLS certificate validation (default: true for self-signed certs)
 
 ## Notes
 - All connection parameters are in `data/config.json`.

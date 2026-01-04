@@ -5,7 +5,7 @@
   <title>Datakom Proxy API Test</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 2em; }
-    button { margin: 0.5em 0.5em 0.5em 0; padding: 0.5em 1em; }
+    button { border-radius: 5px; border-width: 1px; cursor: pointer; }
     #result { 
       margin-top: 2em; 
       white-space: pre-wrap; 
@@ -32,14 +32,18 @@
     padding: 5px;
     border-radius: 5px;
   }
+  .block-btns_item.line{
+    display: flex;
+    gap: 10px;
+  }
 </style>
 <body>
   <h2>Datakom Proxy API Test</h2>
   <div class="block-btns">
-    <div class="block-btns_item"><button onclick="callApi('health')">Server status</button><div class="btn-hint">Check server health status</div></div>
-    <div class="block-btns_item"><button onclick="callApi('restart')">Server restart</button><div class="btn-hint">Restart server</div></div>
-    <div class="block-btns_item"><button onclick="callApi('node_list')">Devices</button><div class="btn-hint">Get the list of user nodes</div></div>
-    <div class="block-btns_item">
+    <div class="block-btns_item line"><button onclick="callApi('health')">Server status</button><div class="btn-hint">Check server health status</div></div>
+    <div class="block-btns_item line"><button onclick="callApi('restart')">Server restart</button><div class="btn-hint">Restart server</div></div>
+    <div class="block-btns_item line"><button onclick="callApi('node_list')">Devices</button><div class="btn-hint">Get the list of user nodes</div></div>
+    <div class="block-btns_item line">
       <div>
         <label>node_id: <input id="listNode_node_id" type="text" placeholder="example, 12345"></label>
         <button onclick="callApi('devx_list?node=' + buildDidNodeId('listNode'))">Device list</button>
@@ -79,7 +83,31 @@
       </div>
       <div class="btn-hint">Get EXTRA.Leds object from the last dump. You can specify <b>did</b> and <b>node_id</b> (if omitted, values from config.json are used).</div>
     </div>
-    <div class="block-btns_item"><button onclick="callApiAny()">POST /api/any (devx_pump)</button><div class="btn-hint">Send a universal SCADA request (devx_pump)</div></div>
+    <div class="block-btns_item">
+      <div>
+        <label>node_id: <input id="dout_node_id" type="text" placeholder="node id (optional)"></label>
+        <label>did: <input id="dout_did" type="text" placeholder="device id (optional)"></label>
+        <button onclick="callApi('dump_devm_dout' + buildDidNodeId('dout'))">EXTRA.Dout</button>
+      </div>
+      <div class="btn-hint">Get EXTRA.Dout (digital outputs) array from the last dump. You can specify <b>did</b> and <b>node_id</b> (if omitted, values from config.json are used).</div>
+    </div>
+    
+    <div class="block-btns_item">
+      <div style="border-bottom: 1px solid #ddd; padding-bottom: 5px; margin-bottom: 5px; font-weight: bold;">Device Control Commands</div>
+      <div>
+        <label>did: <input id="control_did" type="text" placeholder="device id (optional, from config if empty)" style="width: 250px;"></label>
+      </div>
+      <div style="margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap;">
+        <button onclick="callDeviceControl('run')" style="background: #28a745; color: white;">▶️ Run</button>
+        <button onclick="callDeviceControl('auto')" style="background: #17a2b8; color: white;">🔄 Auto</button>
+        <button onclick="callDeviceControl('manual')" style="background: #ffc107; color: black;">✋ Manual</button>
+        <button onclick="callDeviceControl('test')" style="background: #6c757d; color: white;">🔧 Test</button>
+        <button onclick="callDeviceControl('stop')" style="background: #dc3545; color: white;">⏹️ Stop</button>
+      </div>
+      <div class="btn-hint">Send device control commands. Actions: Run (BR), Auto (BA), Manual (BM), Test (BT), Stop (BS). If <b>did</b> is not specified, value from config.json is used.</div>
+    </div>
+    
+    <div class="block-btns_item line"><button onclick="callApiAny()">POST /api/any (devx_pump)</button><div class="btn-hint">Send a universal SCADA request (devx_pump)</div></div>
   </div>
   
   <div id="result" style="white-space: break-spaces; overflow: auto; max-height: 300px;">The answer will appear here...</div>
@@ -127,6 +155,26 @@
         const apiBase = getApiBase();
         const body = { Request: 'devx_pump', job: 1 };
         const res = await fetch(apiBase + 'any', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const text = await res.text();
+        document.getElementById('result').textContent = formatResponse(text);
+      } catch (e) {
+        document.getElementById('result').textContent = 'Error: ' + e;
+      }
+    }
+    
+    async function callDeviceControl(action) {
+      const didInput = document.getElementById('control_did')?.value.trim();
+      
+      document.getElementById('result').textContent = 'Loading...';
+      try {
+        const apiBase = getApiBase();
+        // If did is provided, convert to number, otherwise send empty object and let server use config.json
+        const body = didInput ? { did: Number(didInput), action: action } : { action: action };
+        const res = await fetch(apiBase + 'device/control', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
