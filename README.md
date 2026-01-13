@@ -53,8 +53,9 @@ All runtime JSON files (device dumps, lists, config, state, version) are now sto
 
 - The server logs warnings and errors for file operations and connection issues.
 - Connection state is always saved to `data/state.json`.
-- Progressive reconnection delay increases after each failure (30→40→50→...minutes)
+- Progressive reconnection delay increases after each failure (60→70→80→...minutes)
 - During pause, all API requests serve cached data from files
+- Connection automatically resets to base 60 minutes after 30 minutes of stable operation
 
 ## Connection States
 
@@ -74,8 +75,9 @@ The server manages connection lifecycle with the following states:
 
 - **After 50 minutes** of successful connection: automatic 10-minute disconnect (state: `Waiting`)
 - **After connection error**: progressive wait time before retry (state: `Paused`)
-  - First failure: 30 minutes
-  - Each subsequent failure: +10 minutes (max typically ~90+ minutes)
+  - First failure: 60 minutes
+  - Each subsequent failure: +10 minutes
+  - Resets to 60 minutes after 30 minutes of stable connection
 - **During Paused or Waiting**: all API requests return cached data from files
 - **Manual restart**: use `/api/restart` to reset wait time and reconnect immediately
 
@@ -296,7 +298,7 @@ All connection parameters are in `config.json`:
 - `password` — user password
 - `node_id` — (optional) default node ID
 - `did` — (optional) default device ID
-- `reconnect_wait_minutes` — wait time before reconnect after failure (default: 30)
+- `reconnect_wait_minutes` — wait time before reconnect after failure (default: 60, increases by 10 each failure)
 - `insecure_tls` — disable TLS certificate validation (default: true for self-signed certs)
 
 ## Notes

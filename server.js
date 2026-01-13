@@ -256,7 +256,7 @@ function canAttemptReconnect(forceLog = false) {
     
     // If state is PAUSED and date_time_change_state exists
     if (stateData.connect_state === CONNECT_ENUM.PAUSED && stateData.date_time_change_state) {
-      const waitMinutes = config.reconnect_wait_minutes || 30;
+      const waitMinutes = config.reconnect_wait_minutes || 60;
       const lastAttempt = new Date(stateData.date_time_change_state);
       const now = new Date();
       const minutesPassed = (now - lastAttempt) / (1000 * 60);
@@ -270,7 +270,7 @@ function canAttemptReconnect(forceLog = false) {
       // Log only once every 5 minutes to avoid spam
       const nowTime = Date.now();
       if (forceLog || nowTime - lastReconnectLogTime > RECONNECT_LOG_INTERVAL) {
-        log('INFO', `Still waiting ${remainingMinutes} minutes before next attempt`);
+        log('INFO', `Still waiting ${remainingMinutes} of ${waitMinutes} minutes before next attempt`);
         lastReconnectLogTime = nowTime;
       }
       return false;
@@ -285,7 +285,7 @@ function canAttemptReconnect(forceLog = false) {
 function handleConnectionFailure() {
   try {
     const config = loadConfig();
-    const currentWait = config.reconnect_wait_minutes || 30;
+    const currentWait = config.reconnect_wait_minutes || 60;
     const newWait = currentWait + 10;
     
     config.reconnect_wait_minutes = newWait;
@@ -297,15 +297,62 @@ function handleConnectionFailure() {
   }
 }
 
-function resetReconnectConfig() {
+function resetReconnectConfig(force = false) {
   try {
     const config = loadConfig();
-    config.reconnect_wait_minutes = 30;
+    const oldWait = config.reconnect_wait_minutes || 60;
+    config.reconnect_wait_minutes = 60;
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf-8');
-    log('INFO', 'Connection successful, reset wait time to 30 minutes');
+    if (force) {
+      log('INFO', `Manual restart - wait time reset from ${oldWait} to 60 minutes`);
+    } else {
+      log('INFO', `Connection stable for 30 minutes, reset wait time from ${oldWait} to 60 minutes`);
+    }
   } catch (e) {
     log('WARN', 'Could not reset reconnect config:', e.message);
   }
+}
+
+// Функция для запуска проверки стабильности соединения
+function startStableConnectionCheck() {
+  // Очищаем предыдущий интервал, если есть
+  if (stableConnectionCheckInterval) {
+    clearInterval(stableConnectionCheckInterval);
+  }
+  
+  lastSuccessfulConnectionTime = Date.now();
+  
+  // Проверяем каждую минуту
+  stableConnectionCheckInterval = setInterval(() => {
+    if (!isLoggedIn || !persistentClient.ws || persistentClient.ws.readyState !== WebSocket.OPEN) {
+      // Соединение потеряно, останавливаем проверку
+      clearInterval(stableConnectionCheckInterval);
+      stableConnectionCheckInterval = null;
+      lastSuccessfulConnectionTime = null;
+      return;
+    }
+    
+    const config = loadConfig();
+    const currentWait = config.reconnect_wait_minutes || 60;
+    
+    // Если соединение стабильно и время ожидания больше 60 минут
+    if (currentWait > 60 && lastSuccessfulConnectionTime) {
+      const minutesPassed = (Date.now() - lastSuccessfulConnectionTime) / (1000 * 60);
+      
+      if (minutesPassed >= 30) {
+        // Соединение стабильно 30 минут, сбрасываем время ожидания
+        resetReconnectConfig();
+        clearInterval(stableConnectionCheckInterval);
+        stableConnectionCheckInterval = null;
+        lastSuccessfulConnectionTime = null;
+      }
+    } else if (currentWait <= 60) {
+      // Время ожидания уже минимальное, останавливаем проверку
+      clearInterval(stableConnectionCheckInterval);
+      stableConnectionCheckInterval = null;
+      lastSuccessfulConnectionTime = null;
+    }
+  }, 60000); // Проверяем каждую минуту
 }
 
 async function tryConnectIfReady() {
@@ -448,6 +495,12 @@ class RainbowClient {
         });
         this.ws.on('error', (err) => {
           log('ERROR', 'WebSocket error:', err.message);
+          // Останавливаем проверку стабильности соединения
+          if (stableConnectionCheckInterval) {
+            clearInterval(stableConnectionCheckInterval);
+            stableConnectionCheckInterval = null;
+            lastSuccessfulConnectionTime = null;
+          }
           this.setState(CONNECT_ENUM.PAUSED);
           saveConnectionError(err);
           handleConnectionFailure();
@@ -455,6 +508,12 @@ class RainbowClient {
         });
         this.ws.on('close', (code, reason) => {
           isLoggedIn = false;
+          // Останавливаем проверку стабильности соединения
+          if (stableConnectionCheckInterval) {
+            clearInterval(stableConnectionCheckInterval);
+            stableConnectionCheckInterval = null;
+            lastSuccessfulConnectionTime = null;
+          }
           // If code 1006 or 1002 - it's abnormal close, set pause
           if (code === 1006 || code === 1002) {
             this.setState(CONNECT_ENUM.PAUSED);
@@ -494,10 +553,24 @@ class RainbowClient {
       if (msg.Request === 'user_warn' && (msg.ErrText === 'Multiple Logon Error' || msg.ErrCode === -1010)) {
         isLoggedIn = false;
         const errText = getErrorText(msg.ErrCode) || msg.ErrText;
-        log('WARN', `Multiple Logon Error: initiating reconnect... (${msg.ErrCode}: ${errText})`);
-        this.close();
+        log('WARN', `Multiple Logon Error detected (${msg.ErrCode}: ${errText})`);
+        log('WARN', 'Another session is active. Waiting 30 seconds before closing connection...');
+        // Останавливаем проверку стабильности
+        if (stableConnectionCheckInterval) {
+          clearInterval(stableConnectionCheckInterval);
+          stableConnectionCheckInterval = null;
+          lastSuccessfulConnectionTime = null;
+        }
+        // Ждем 30 секунд перед закрытием, чтобы другая сессия успела завершиться
+        setTimeout(() => {
+          log('INFO', 'Closing connection after Multiple Logon Error delay');
+          this.close();
+        }, 30000);
       }
-      if (msg.Request === 'usr_fedai') this.fedaiChallenge = msg.fedai;
+      if (msg.Request === 'usr_fedai') {
+        this.fedaiChallenge = msg.fedai;
+        log('DEBUG', 'Received fedai challenge:', msg.fedai.substring(0, 100) + '...');
+      }
       if (msg.Request === 'usr_login') this.loginData = msg;
       if (msg.Request === 'node_list') {
         this.nodeList = msg;
@@ -546,11 +619,21 @@ class RainbowClient {
     }
     async login() {
       const { login, password } = this.config;
+      log('DEBUG', 'Starting login process for user:', login);
       this.setState(CONNECT_ENUM.AUTHENTICATING);
+      
+      log('DEBUG', 'Waiting for usr_fedai challenge...');
       await this.waitForMessage('usr_fedai', 10000);
-      if (!this.fedaiChallenge) throw new Error('No fedai challenge received');
+      
+      if (!this.fedaiChallenge) {
+        log('ERROR', 'No fedai challenge received');
+        throw new Error('No fedai challenge received');
+      }
+      
+      log('DEBUG', 'Received fedai challenge, calculating response...');
       const rndNum = calculateFedai(this.fedaiChallenge);
       const random = Date.now() * 10000;
+      
       const loginReq = {
         Request: 'usr_login',
         UsrNam: login,
@@ -561,9 +644,19 @@ class RainbowClient {
         Random: random,
         RndNum: rndNum
       };
+      
+      log('DEBUG', 'Sending usr_login request with fedai response...');
       this.send(loginReq);
+      
+      log('DEBUG', 'Waiting for usr_login response...');
       const loginResponse = await this.waitForMessage('usr_login', 20000);
-      if (!loginResponse.UsrIdt) throw new Error('Login failed');
+      
+      if (!loginResponse.UsrIdt) {
+        log('ERROR', 'Login failed - no UsrIdt in response:', JSON.stringify(loginResponse));
+        throw new Error('Login failed');
+      }
+      
+      log('INFO', 'Login successful, UsrIdt:', loginResponse.UsrIdt);
       this.setState(CONNECT_ENUM.CONNECTED);
       this.send({ Request: 'node_list' });
       const nodeList = await this.waitForMessage('node_list', 15000);
@@ -624,6 +717,8 @@ const persistentClient = new RainbowClient();
 let isLoggedIn = false;
 let isConnecting = false;
 let connectPromise = null;
+let lastSuccessfulConnectionTime = null; // Время последнего успешного подключения
+let stableConnectionCheckInterval = null; // Интервал для проверки стабильности соединения
 let lastReconnectLogTime = 0;
 const RECONNECT_LOG_INTERVAL = 5 * 60 * 1000; // Log once every 5 minutes
 
@@ -656,7 +751,10 @@ async function ensureConnectedAndLoggedIn() {
       if (!isLoggedIn) {
         await persistentClient.login();
         isLoggedIn = true;
-        resetReconnectConfig();
+        const config = loadConfig();
+        const currentWait = config.reconnect_wait_minutes || 60;
+        log('INFO', `Connection successful (current wait time: ${currentWait} minutes). Will reset to 60 minutes after 30 minutes of stable connection`);
+        startStableConnectionCheck();
       }
       
       let config = loadConfig();
@@ -680,6 +778,12 @@ async function ensureConnectedAndLoggedIn() {
       }
     } catch (e) {
       log('ERROR', 'Login failed:', e.message);
+      // Останавливаем проверку стабильности соединения
+      if (stableConnectionCheckInterval) {
+        clearInterval(stableConnectionCheckInterval);
+        stableConnectionCheckInterval = null;
+        lastSuccessfulConnectionTime = null;
+      }
       saveConnectionError(e);
       handleConnectionFailure();
       persistentClient.setState(CONNECT_ENUM.PAUSED);
@@ -1054,7 +1158,7 @@ const server = http.createServer(async (req, res) => {
         persistentClient.close();
       }
       // Reset pause and wait settings
-      resetReconnectConfig();
+      resetReconnectConfig(true);
       // Wait a bit before reconnecting
       setTimeout(async () => {
         try {
